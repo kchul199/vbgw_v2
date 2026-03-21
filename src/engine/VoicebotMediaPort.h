@@ -1,14 +1,17 @@
 #pragma once
 #include <pjsua2.hpp>
 #include <memory>
+#include <mutex>
 
 class VoicebotAiClient;
+class RingBuffer;
+class SileroVad;
 
 class VoicebotMediaPort : public pj::AudioMediaPort {
 public:
     VoicebotMediaPort();
     void setAiClient(std::shared_ptr<VoicebotAiClient> client);
-    virtual ~VoicebotMediaPort();
+    virtual ~VoicebotMediaPort(); // unique_ptr 소멸자는 cpp에서 완전 타입 필요
 
     // 수신 (Rx): PBX에서 보낸 사용자(고객) 음성이 들어오는 곳 -> STT 스트리밍용
     virtual void onFrameReceived(pj::MediaFrame &frame) override;
@@ -26,9 +29,9 @@ public:
     void resetVad();
 
 private:
-    class RingBuffer* tts_buffer_;
+    std::unique_ptr<RingBuffer> tts_buffer_; // RAII
     std::shared_ptr<VoicebotAiClient> ai_client_;
-    class SileroVad* vad_;
+    std::unique_ptr<SileroVad> vad_;         // RAII
     
     // Thread safety for ai_client_
     std::mutex client_mutex_;

@@ -79,10 +79,13 @@ graph TD
 ## 5. 핵심 데이터 흐름 (Core Data Flow)
 
 ### 5.1 VAD 및 오디오 처리 파이프라인
-1.  **SIP RTP (20ms, 8kHz, PCMA/U)** -> 디코딩 -> **PCM (8kHz)**
-2.  **PCM (8kHz)** -> 리샘플링 -> **PCM (16kHz)**
-3.  **PCM (16kHz)** -> 512 샘플 버퍼링 -> **Silero VAD (ONNX Inference)**
-4.  **VAD Result** & **Audio Data** -> gRPC Streaming -> **AI Engine**
+게이트웨이 내부에서 오디오 스트림은 다음과 같은 단계로 처리되어 실시간 VAD 및 통신을 수행합니다.
+
+1.  **SIP RTP 수신**: PBX로부터 20ms 간격으로 8kHz G.711(PCMA/PCMU) RTP 패킷을 수신합니다.
+2.  **원시 오디오 추출**: G.711 데이터를 디코딩하여 8kHz PCM 데이터로 변환합니다.
+3.  **인스턴트 리샘플링 (SpeexDSP)**: AI 엔진(STT)과 Silero VAD 로직을 위해 8kHz PCM을 16kHz PCM으로 실시간 업샘플링합니다.
+4.  **VAD 버퍼링 및 추론 (ONNX)**: 16kHz PCM 데이터를 512 샘플(32ms) 단위로 내부 버퍼링하여 ONNX 런타임에서 Silero VAD 추론을 수행, 화자 발화 여부(`is_speaking`)를 판단합니다.
+5.  **gRPC 스트리밍 (AI 전송)**: 버퍼링된 16kHz 오디오 데이터와 VAD 추론 결과(`is_speaking`)를 `AudioChunk`에 담아 AI 엔진(STT 등)으로 스트리밍 전송합니다.
 
 ## 6. 특화 성능 및 고려사항 (Technical Considerations)
 

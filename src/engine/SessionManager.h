@@ -2,6 +2,7 @@
 #include <unordered_map>
 #include <memory>
 #include <mutex>
+#include <cstdlib>
 #include "VoicebotCall.h"
 
 // 싱글톤 기반의 쓰레드 세이프 콜 라이프사이클 관리자
@@ -31,13 +32,12 @@ public:
         return nullptr;
     }
 
-    // 동시 통화 채널 수 제한 확인 (최대 100채널 예시)
+    // [P5 Fix] 최대 동시 채널 수를 환경 변수(MAX_CONCURRENT_CALLS)에서 읽음
     bool canAcceptCall() {
         std::lock_guard<std::mutex> lock(mutex_);
-        return calls_.size() < 100;
+        return calls_.size() < static_cast<size_t>(getMaxCalls());
     }
 
-    // 현재 활성화된 채널 수 반환 (Shutdown 대기용)
     size_t getActiveCallCount() {
         std::lock_guard<std::mutex> lock(mutex_);
         return calls_.size();
@@ -55,7 +55,7 @@ public:
         for (auto& call : active_calls) {
             try {
                 pj::CallOpParam prm;
-                prm.statusCode = PJSIP_SC_DECLINE; // 603 Decline 통보
+                prm.statusCode = PJSIP_SC_DECLINE;
                 call->hangup(prm);
             } catch(...) {}
         }
@@ -64,9 +64,17 @@ public:
 private:
     SessionManager() = default;
     ~SessionManager() = default;
-
     SessionManager(const SessionManager&) = delete;
     SessionManager& operator=(const SessionManager&) = delete;
+
+    // 환경 변수에서 최대 채널 수 읽기 (기본값: 100)
+    static int getMaxCalls() {
+        const char* env = std::getenv("MAX_CONCURRENT_CALLS");
+        if (env) {
+            try { return std::stoi(env); } catch (...) {}
+        }
+        return 100;
+    }
 
     std::unordered_map<int, std::shared_ptr<VoicebotCall>> calls_;
     std::mutex mutex_;

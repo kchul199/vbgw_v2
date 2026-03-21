@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <queue>
 #include <functional>
+#include <atomic>
 
 class VoicebotAiClient {
 public:
@@ -35,7 +36,10 @@ public:
 
 private:
     void streamWorker(); // 비동기 워커 스레드 (Tx)
-    void readWorker();   // 비동기 수신 스레드 (Rx)
+    void readWorker();   // 비동기 수신 스레드 (Rx) - 지수 백오프 재연결 포함
+
+    // 재연결을 포함한 실제 스트리밍 수행
+    bool tryConnectAndRead();
 
     std::unique_ptr<voicebot::ai::VoicebotAiService::Stub> stub_;
     std::shared_ptr<grpc::ClientReaderWriter<voicebot::ai::AudioChunk, voicebot::ai::AiResponse>> stream_;
@@ -46,10 +50,18 @@ private:
     std::function<void(const std::string&)> on_error_;
 
     // 비동기 큐 관리용
-    std::queue<std::vector<uint8_t>> audio_queue_;
+    struct AudioItem {
+        std::vector<uint8_t> pcm_data;
+        bool is_speaking;
+    };
+    std::queue<AudioItem> audio_queue_;
     std::mutex queue_mutex_;
     std::condition_variable queue_cv_;
-    bool is_running_;
+    std::atomic<bool> is_running_;
     std::thread worker_thread_;
     std::thread read_thread_;
+
+    // 재연결 정책
+    static constexpr int kMaxReconnectRetries = 5;
+    std::atomic<int> reconnect_attempts_{0};
 };

@@ -3,54 +3,54 @@
   "directory": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build",
   "command": "/usr/bin/c++ -DFMT_SHARED -DPROTOBUF_USE_DLLS -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/opt/homebrew/Cellar/pjproject/2.16/include -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/src -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/generated -I/opt/homebrew/include/onnxruntime -isystem /opt/homebrew/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.1/include -std=gnu++20 -arch arm64 -DPJ_AUTOCONF=1 -DPJ_IS_BIG_ENDIAN=0 -DPJ_IS_LITTLE_ENDIAN=1 -o CMakeFiles/vbgw.dir/src/main.cpp.o -c /Users/kchul199/Desktop/project/antigravity_project/vbgw/src/main.cpp",
   "file": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/src/main.cpp",
-  "output": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/CMakeFiles/vbgw.dir/src/main.cpp.o"
+  "output": "CMakeFiles/vbgw.dir/src/main.cpp.o"
 },
 {
   "directory": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build",
   "command": "/usr/bin/c++ -DFMT_SHARED -DPROTOBUF_USE_DLLS -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/opt/homebrew/Cellar/pjproject/2.16/include -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/src -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/generated -I/opt/homebrew/include/onnxruntime -isystem /opt/homebrew/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.1/include -std=gnu++20 -arch arm64 -DPJ_AUTOCONF=1 -DPJ_IS_BIG_ENDIAN=0 -DPJ_IS_LITTLE_ENDIAN=1 -o CMakeFiles/vbgw.dir/src/engine/VoicebotEndpoint.cpp.o -c /Users/kchul199/Desktop/project/antigravity_project/vbgw/src/engine/VoicebotEndpoint.cpp",
   "file": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/src/engine/VoicebotEndpoint.cpp",
-  "output": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/CMakeFiles/vbgw.dir/src/engine/VoicebotEndpoint.cpp.o"
+  "output": "CMakeFiles/vbgw.dir/src/engine/VoicebotEndpoint.cpp.o"
 },
 {
   "directory": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build",
   "command": "/usr/bin/c++ -DFMT_SHARED -DPROTOBUF_USE_DLLS -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/opt/homebrew/Cellar/pjproject/2.16/include -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/src -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/generated -I/opt/homebrew/include/onnxruntime -isystem /opt/homebrew/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.1/include -std=gnu++20 -arch arm64 -DPJ_AUTOCONF=1 -DPJ_IS_BIG_ENDIAN=0 -DPJ_IS_LITTLE_ENDIAN=1 -o CMakeFiles/vbgw.dir/src/engine/VoicebotAccount.cpp.o -c /Users/kchul199/Desktop/project/antigravity_project/vbgw/src/engine/VoicebotAccount.cpp",
   "file": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/src/engine/VoicebotAccount.cpp",
-  "output": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/CMakeFiles/vbgw.dir/src/engine/VoicebotAccount.cpp.o"
+  "output": "CMakeFiles/vbgw.dir/src/engine/VoicebotAccount.cpp.o"
 },
 {
   "directory": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build",
   "command": "/usr/bin/c++ -DFMT_SHARED -DPROTOBUF_USE_DLLS -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/opt/homebrew/Cellar/pjproject/2.16/include -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/src -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/generated -I/opt/homebrew/include/onnxruntime -isystem /opt/homebrew/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.1/include -std=gnu++20 -arch arm64 -DPJ_AUTOCONF=1 -DPJ_IS_BIG_ENDIAN=0 -DPJ_IS_LITTLE_ENDIAN=1 -o CMakeFiles/vbgw.dir/src/engine/VoicebotCall.cpp.o -c /Users/kchul199/Desktop/project/antigravity_project/vbgw/src/engine/VoicebotCall.cpp",
   "file": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/src/engine/VoicebotCall.cpp",
-  "output": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/CMakeFiles/vbgw.dir/src/engine/VoicebotCall.cpp.o"
+  "output": "CMakeFiles/vbgw.dir/src/engine/VoicebotCall.cpp.o"
 },
 {
   "directory": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build",
   "command": "/usr/bin/c++ -DFMT_SHARED -DPROTOBUF_USE_DLLS -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/opt/homebrew/Cellar/pjproject/2.16/include -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/src -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/generated -I/opt/homebrew/include/onnxruntime -isystem /opt/homebrew/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.1/include -std=gnu++20 -arch arm64 -DPJ_AUTOCONF=1 -DPJ_IS_BIG_ENDIAN=0 -DPJ_IS_LITTLE_ENDIAN=1 -o CMakeFiles/vbgw.dir/src/engine/VoicebotMediaPort.cpp.o -c /Users/kchul199/Desktop/project/antigravity_project/vbgw/src/engine/VoicebotMediaPort.cpp",
   "file": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/src/engine/VoicebotMediaPort.cpp",
-  "output": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/CMakeFiles/vbgw.dir/src/engine/VoicebotMediaPort.cpp.o"
+  "output": "CMakeFiles/vbgw.dir/src/engine/VoicebotMediaPort.cpp.o"
 },
 {
   "directory": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build",
   "command": "/usr/bin/c++ -DFMT_SHARED -DPROTOBUF_USE_DLLS -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/opt/homebrew/Cellar/pjproject/2.16/include -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/src -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/generated -I/opt/homebrew/include/onnxruntime -isystem /opt/homebrew/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.1/include -std=gnu++20 -arch arm64 -DPJ_AUTOCONF=1 -DPJ_IS_BIG_ENDIAN=0 -DPJ_IS_LITTLE_ENDIAN=1 -o CMakeFiles/vbgw.dir/src/ai/VoicebotAiClient.cpp.o -c /Users/kchul199/Desktop/project/antigravity_project/vbgw/src/ai/VoicebotAiClient.cpp",
   "file": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/src/ai/VoicebotAiClient.cpp",
-  "output": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/CMakeFiles/vbgw.dir/src/ai/VoicebotAiClient.cpp.o"
+  "output": "CMakeFiles/vbgw.dir/src/ai/VoicebotAiClient.cpp.o"
 },
 {
   "directory": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build",
   "command": "/usr/bin/c++ -DFMT_SHARED -DPROTOBUF_USE_DLLS -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/opt/homebrew/Cellar/pjproject/2.16/include -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/src -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/generated -I/opt/homebrew/include/onnxruntime -isystem /opt/homebrew/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.1/include -std=gnu++20 -arch arm64 -DPJ_AUTOCONF=1 -DPJ_IS_BIG_ENDIAN=0 -DPJ_IS_LITTLE_ENDIAN=1 -o CMakeFiles/vbgw.dir/src/ai/SileroVad.cpp.o -c /Users/kchul199/Desktop/project/antigravity_project/vbgw/src/ai/SileroVad.cpp",
   "file": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/src/ai/SileroVad.cpp",
-  "output": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/CMakeFiles/vbgw.dir/src/ai/SileroVad.cpp.o"
+  "output": "CMakeFiles/vbgw.dir/src/ai/SileroVad.cpp.o"
 },
 {
   "directory": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build",
   "command": "/usr/bin/c++ -DFMT_SHARED -DPROTOBUF_USE_DLLS -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/opt/homebrew/Cellar/pjproject/2.16/include -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/src -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/generated -I/opt/homebrew/include/onnxruntime -isystem /opt/homebrew/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.1/include -std=gnu++20 -arch arm64 -DPJ_AUTOCONF=1 -DPJ_IS_BIG_ENDIAN=0 -DPJ_IS_LITTLE_ENDIAN=1 -o CMakeFiles/vbgw.dir/generated/voicebot.pb.cc.o -c /Users/kchul199/Desktop/project/antigravity_project/vbgw/build/generated/voicebot.pb.cc",
   "file": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/generated/voicebot.pb.cc",
-  "output": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/CMakeFiles/vbgw.dir/generated/voicebot.pb.cc.o"
+  "output": "CMakeFiles/vbgw.dir/generated/voicebot.pb.cc.o"
 },
 {
   "directory": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build",
   "command": "/usr/bin/c++ -DFMT_SHARED -DPROTOBUF_USE_DLLS -DSPDLOG_COMPILED_LIB -DSPDLOG_FMT_EXTERNAL -DSPDLOG_SHARED_LIB -I/opt/homebrew/Cellar/pjproject/2.16/include -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/src -I/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/generated -I/opt/homebrew/include/onnxruntime -isystem /opt/homebrew/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.1/include -std=gnu++20 -arch arm64 -DPJ_AUTOCONF=1 -DPJ_IS_BIG_ENDIAN=0 -DPJ_IS_LITTLE_ENDIAN=1 -o CMakeFiles/vbgw.dir/generated/voicebot.grpc.pb.cc.o -c /Users/kchul199/Desktop/project/antigravity_project/vbgw/build/generated/voicebot.grpc.pb.cc",
   "file": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/generated/voicebot.grpc.pb.cc",
-  "output": "/Users/kchul199/Desktop/project/antigravity_project/vbgw/build/CMakeFiles/vbgw.dir/generated/voicebot.grpc.pb.cc.o"
+  "output": "CMakeFiles/vbgw.dir/generated/voicebot.grpc.pb.cc.o"
 }
 ]

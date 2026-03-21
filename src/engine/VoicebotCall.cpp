@@ -4,28 +4,23 @@
 #include "SessionManager.h"
 #include "../ai/VoicebotAiClient.h"
 #include <grpcpp/grpcpp.h>
-#include <iostream>
 
 using namespace pj;
 
 VoicebotCall::VoicebotCall(Account &acc, int call_id)
-    : Call(acc, call_id), media_port(nullptr), ai_client_(nullptr) {}
+    : Call(acc, call_id), media_port_(nullptr), ai_client_(nullptr) {}
 
-VoicebotCall::~VoicebotCall() {
-    if (media_port) {
-        delete media_port;
-        media_port = nullptr;
-    }
-}
+// unique_ptr<VoicebotMediaPort> 소멸자는 완전한 타입이 필요하므로 .cpp에서 정의
+VoicebotCall::~VoicebotCall() {}
 
 void VoicebotCall::onCallState(OnCallStateParam &prm) {
     CallInfo ci = getInfo();
-    std::cout << "Call " << ci.id << " state: " << ci.stateText << std::endl;
+    spdlog::info("[Call] ID={} State={} Reason={}", ci.id, ci.stateText, ci.lastReason);
 
     if (ci.state == PJSIP_INV_STATE_DISCONNECTED) {
-        std::cout << "Call disconnected. Reason: " << ci.lastReason << std::endl;
-        // Delete this call instance safely via SessionManager
+        // unique_ptr이 있으므로 media_port_ 는 자동 해제됨
         SessionManager::getInstance().removeCall(ci.id);
+        spdlog::info("[Call] ID={} Removed from SessionManager.", ci.id);
     }
 }
 
@@ -35,33 +30,36 @@ void VoicebotCall::onCallMediaState(OnCallMediaStateParam &prm) {
         if (ci.media[i].type == PJMEDIA_TYPE_AUDIO && getMedia(i)) {
             AudioMedia *aud_med = (AudioMedia *)getMedia(i);
             
-            // 1. gRPC 클라이언트 (AI 엔진 접속) 세팅 및 링버퍼 콜백 연결
+            // [P2 Fix] AI 엔진 주소를 환경 변수로 외부화 (기본값: localhost:50051)
             if (!ai_client_) {
-                auto channel = grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials());
+                const char* ai_addr_env = std::getenv("AI_ENGINE_ADDR");
+                std::string ai_addr = ai_addr_env ? ai_addr_env : "localhost:50051";
+                spdlog::info("[Call] Connecting to AI Engine at: {}", ai_addr);
+
+                auto channel = grpc::CreateChannel(ai_addr, grpc::InsecureChannelCredentials());
                 ai_client_ = std::make_shared<VoicebotAiClient>(channel);
                 
                 ai_client_->setTtsCallback([this](const uint8_t* data, size_t len) {
-                    if (media_port) {
-                        media_port->writeTtsAudio(data, len);
+                    if (media_port_) {
+                        media_port_->writeTtsAudio(data, len);
                     }
                 });
                 
                 ai_client_->setTtsClearCallback([this]() {
-                    if (media_port) {
-                        media_port->clearTtsAudio();
-                        media_port->resetVad(); // 화자 개입 시 VAD 히스토리 초기화
+                    if (media_port_) {
+                        media_port_->clearTtsAudio();
+                        media_port_->resetVad();
                     }
                 });
                 
                 ai_client_->setErrorCallback([this](const std::string& err) {
-                    spdlog::error("🚨 [Call] Hanging up due to AI Error: {}", err);
-                    // AI 서버 장애 시 통화 강제 종류 (503 Service Unavailable)
+                    spdlog::error("🚨 [Call] Hanging up due to permanent AI Error: {}", err);
                     try {
                         pj::CallOpParam prm;
                         prm.statusCode = PJSIP_SC_SERVICE_UNAVAILABLE;
                         hangup(prm);
                     } catch (const pj::Error& e) {
-                        // ignore error
+                        spdlog::warn("[Call] Error during hangup: {}", e.info());
                     }
                 });
                 
@@ -70,17 +68,16 @@ void VoicebotCall::onCallMediaState(OnCallMediaStateParam &prm) {
                 ai_client_->startSession(session_id_str);
             }
 
-            // 2. 미디어 포트를 콜 스트림에 물리며 앞서 생성한 AI 클라이언트 주입
-            if (!media_port) {
-                media_port = new VoicebotMediaPort();
-                media_port->setAiClient(ai_client_);
+            // [P1 Fix] unique_ptr로 자동 메모리 관리
+            if (!media_port_) {
+                media_port_ = std::make_unique<VoicebotMediaPort>();
+                media_port_->setAiClient(ai_client_);
             }
             
-            // Call 오디오 파이프라인 <-> Custom Port 연결 (Rx/Tx)
-            aud_med->startTransmit(*media_port);
-            media_port->startTransmit(*aud_med);
+            aud_med->startTransmit(*media_port_);
+            media_port_->startTransmit(*aud_med);
             
-            std::cout << "AI Media Port connected. RTP Stream converting to PCM." << std::endl;
+            spdlog::info("[Call] AI Media Port connected. RTP Stream converting to PCM.");
         }
     }
 }

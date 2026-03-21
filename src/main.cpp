@@ -27,7 +27,14 @@ int main() {
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
 
-    std::cout << "Starting AI Voicebot Gateway (PJSUA2)..." << std::endl;
+    // [P8 Fix] LOG_LEVEL 환경변수로 로그 레벨 설정 (기본값: info)
+    const char* log_level_env = std::getenv("LOG_LEVEL");
+    std::string log_level_str = log_level_env ? log_level_env : "info";
+    auto log_level = spdlog::level::from_str(log_level_str);
+    spdlog::set_level(log_level);
+    spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [%t] %v");
+
+    spdlog::info("Starting AI Voicebot Gateway (PJSUA2)... [log_level={}]", log_level_str);
 
     VoicebotEndpoint ep;
     if (!ep.init()) {
