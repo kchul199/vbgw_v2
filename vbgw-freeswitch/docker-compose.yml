@@ -1,0 +1,114 @@
+# docker-compose.yml
+# 변경이력: v1.0.0 | 2026-04-07 | [Implementer] | 최초 생성 | Phase 1 PoC 3-tier 스택
+version: "3.9"
+
+services:
+  # ===== Tier 1: FreeSWITCH Media Engine =====
+  freeswitch:
+    image: signalwire/freeswitch:1.10
+    container_name: vbgw-freeswitch
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./config/freeswitch:/etc/freeswitch:ro
+      - ./recordings:/recordings
+      - ./logs/freeswitch:/var/log/freeswitch
+    environment:
+      - SIP_PORT=${SIP_PORT:-5060}
+      - SIP_TLS_PORT=${SIP_TLS_PORT:-5061}
+      - SIP_TLS_ONLY=${SIP_TLS_ONLY:-false}
+      - SIP_TLS_CERT_DIR=${SIP_TLS_CERT_DIR:-/etc/freeswitch/tls}
+      - SRTP_MODE=${SRTP_MODE:-optional}
+      - EXTERNAL_RTP_IP=${EXTERNAL_RTP_IP:-auto-nat}
+      - EXTERNAL_SIP_IP=${EXTERNAL_SIP_IP:-auto-nat}
+      - STUN_ENABLED=${STUN_ENABLED:-true}
+      - PRACK_ENABLED=${PRACK_ENABLED:-true}
+      - SESSION_TIMER_ENABLED=${SESSION_TIMER_ENABLED:-true}
+      - SESSION_TIMEOUT=${SESSION_TIMEOUT:-1800}
+      - MIN_SE=${MIN_SE:-90}
+      - ANSWER_DELAY_MS=${ANSWER_DELAY_MS:-200}
+      - RTP_PORT_MIN=${RTP_PORT_MIN:-16384}
+      - RTP_PORT_MAX=${RTP_PORT_MAX:-16584}
+      - JB_INIT_MS=${JB_INIT_MS:-100}
+      - JB_MIN_MS=${JB_MIN_MS:-60}
+      - JB_MAX_MS=${JB_MAX_MS:-500}
+      - PBX_HOST=${PBX_HOST:-}
+      - PBX_USERNAME=${PBX_USERNAME:-}
+      - PBX_PASSWORD=${PBX_PASSWORD:-}
+      - PBX_REGISTER=${PBX_REGISTER:-false}
+      - BRIDGE_HOST=${BRIDGE_HOST:-127.0.0.1}
+      - BRIDGE_WS_PORT=${BRIDGE_WS_PORT:-8090}
+      - ESL_PASSWORD=${ESL_PASSWORD:-ClueCon}
+    healthcheck:
+      test: ["CMD", "fs_cli", "-x", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ===== Tier 2: Go Orchestrator =====
+  orchestrator:
+    build:
+      context: ./orchestrator
+      dockerfile: Dockerfile
+    container_name: vbgw-orchestrator
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./recordings:/recordings
+      - ./logs/orchestrator:/var/log/orchestrator
+    environment:
+      - ESL_HOST=${ESL_HOST:-127.0.0.1}
+      - ESL_PORT=${ESL_PORT:-8021}
+      - ESL_PASSWORD=${ESL_PASSWORD:-ClueCon}
+      - BRIDGE_HOST=${BRIDGE_HOST:-127.0.0.1}
+      - BRIDGE_INTERNAL_PORT=${BRIDGE_INTERNAL_PORT:-8091}
+      - HTTP_PORT=${HTTP_PORT:-8080}
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-changeme-admin-key}
+      - RATE_LIMIT_RPS=${RATE_LIMIT_RPS:-20}
+      - RATE_LIMIT_BURST=${RATE_LIMIT_BURST:-40}
+      - MAX_SESSIONS=${MAX_SESSIONS:-100}
+      - RECORDING_ENABLE=${RECORDING_ENABLE:-false}
+      - RECORDING_DIR=${RECORDING_DIR:-/recordings}
+      - RECORDING_MAX_DAYS=${RECORDING_MAX_DAYS:-30}
+      - RECORDING_MAX_MB=${RECORDING_MAX_MB:-1024}
+      - RUNTIME_PROFILE=${RUNTIME_PROFILE:-dev}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:${HTTP_PORT:-8080}/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      freeswitch:
+        condition: service_healthy
+
+  # ===== Tier 3: WebSocket Bridge =====
+  bridge:
+    build:
+      context: ./bridge
+      dockerfile: Dockerfile
+    container_name: vbgw-bridge
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./models:/models:ro
+      - ./logs/bridge:/var/log/bridge
+    environment:
+      - WS_PORT=${BRIDGE_WS_PORT:-8090}
+      - INTERNAL_PORT=${BRIDGE_INTERNAL_PORT:-8091}
+      - AI_GRPC_ADDR=${AI_GRPC_ADDR:-127.0.0.1:50051}
+      - AI_GRPC_TLS=${AI_GRPC_TLS:-false}
+      - ONNX_MODEL_PATH=${ONNX_MODEL_PATH:-/models/silero_vad.onnx}
+      - GRPC_MAX_RETRIES=${GRPC_MAX_RETRIES:-5}
+      - GRPC_MAX_BACKOFF_MS=${GRPC_MAX_BACKOFF_MS:-4000}
+      - GRPC_STREAM_DEADLINE_SECS=${GRPC_STREAM_DEADLINE_SECS:-86400}
+      - ORCHESTRATOR_URL=http://127.0.0.1:${HTTP_PORT:-8080}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:${BRIDGE_INTERNAL_PORT:-8091}/internal/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      freeswitch:
+        condition: service_healthy

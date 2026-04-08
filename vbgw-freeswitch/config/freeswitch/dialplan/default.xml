@@ -1,0 +1,71 @@
+<!--
+  default.xml — Inbound Call Dialplan
+  변경이력: v1.0.0 | 2026-04-07 | [Implementer] | 최초 생성
+  변경이력: v1.1.0 | 2026-04-07 | [Implementer] | P-01 ring_ready 순서 교정
+  변경이력: v1.2.0 | 2026-04-07 | [Implementer] | P-06 audio_fork 실패 fallback
+  변경이력: v1.3.0 | 2026-04-07 | [Implementer] | P-09 183 Early Media 지원
+  변경이력: v1.4.0 | 2026-04-07 | [Implementer] | Q-01 Early Media 단일 extension 통합
+  변경이력: v1.5.0 | 2026-04-07 | [Implementer] | Q-07 start_dtmf를 audio_fork 앞으로 이동
+  변경이력: v1.6.0 | 2026-04-07 | [Implementer] | R-01 단일 condition으로 병합 (AND 평가 문제 해소)
+-->
+<include>
+  <context name="default">
+
+    <!--
+      Voicebot Inbound Handler
+      R-01: 단일 condition 내에서 exec 앱으로 Early Media 분기 처리.
+      multi-condition AND 평가 문제를 원천 차단합니다.
+    -->
+    <extension name="voicebot-inbound">
+      <condition field="destination_number" expression="^(.+)$">
+
+        <!-- Step 1: 180 Ringing (즉시! PBX CANCEL 방지) -->
+        <action application="ring_ready"/>
+
+        <!-- Step 2: Early Media 분기 (채널 변수 기반) -->
+        <action application="set" data="early_media=${sip_h_X-Early-Media}"/>
+
+        <!--
+          Early Media 경로: X-Early-Media: true 헤더가 있으면
+          183 Session Progress → 안내 멘트 재생 → 200 OK
+        -->
+        <action application="execute_extension"
+                data="voicebot-early-media-branch XML features"
+                inline="true"/>
+
+        <!-- Step 3: AGC (음성 자동 게인 제어) -->
+        <action application="agc" data="1"/>
+
+        <!-- Step 4: DTMF 감지 활성화 (audio_fork 앞에 배치 — Q-07) -->
+        <action application="start_dtmf"/>
+
+        <!-- Step 5: Audio streaming → WebSocket Bridge -->
+        <action application="set" data="audio_fork_url=ws://$${bridge_host}:$${bridge_ws_port}/audio/${uuid}"/>
+        <action application="audio_fork" data="${audio_fork_url} 16000 mono"/>
+
+        <!-- Step 6: Park — Orchestrator가 ESL로 제어 -->
+        <action application="park"/>
+
+      </condition>
+    </extension>
+
+  </context>
+
+  <!--
+    Early Media / 일반 응답 분기용 features context
+    execute_extension에서 호출됩니다.
+  -->
+  <context name="features">
+    <extension name="voicebot-early-media-branch">
+      <!-- Early Media 경로 -->
+      <condition field="${early_media}" expression="^true$">
+        <action application="pre_answer"/>
+        <action application="playback" data="$${hold_music}"/>
+        <action application="answer"/>
+        <!-- 일반 경로 (Early Media 아닌 경우) -->
+        <anti-action application="sleep" data="$${answer_delay_ms}"/>
+        <anti-action application="answer"/>
+      </condition>
+    </extension>
+  </context>
+</include>

@@ -1,0 +1,65 @@
+<!--
+  vars.xml — FreeSWITCH 환경변수 매핑
+  변경이력: v1.0.0 | 2026-04-07 | [Implementer] | 최초 생성
+-->
+<include>
+  <!-- SIP -->
+  <X-PRE-PROCESS cmd="set" data="sip_port=${SIP_PORT:-5060}"/>
+  <X-PRE-PROCESS cmd="set" data="sip_tls_port=${SIP_TLS_PORT:-5061}"/>
+  <X-PRE-PROCESS cmd="set" data="sip_tls_only=${SIP_TLS_ONLY:-false}"/>
+  <X-PRE-PROCESS cmd="set" data="sip_tls_cert_dir=${SIP_TLS_CERT_DIR:-/etc/freeswitch/tls}"/>
+  <X-PRE-PROCESS cmd="set" data="srtp_mode=${SRTP_MODE:-optional}"/>
+
+  <!-- NAT -->
+  <X-PRE-PROCESS cmd="set" data="external_rtp_ip=${EXTERNAL_RTP_IP:-auto-nat}"/>
+  <X-PRE-PROCESS cmd="set" data="external_sip_ip=${EXTERNAL_SIP_IP:-auto-nat}"/>
+  <X-PRE-PROCESS cmd="set" data="stun_enabled=${STUN_ENABLED:-true}"/>
+
+  <!-- Session -->
+  <!-- P-13: PRACK default false (many PBX/SBCs don't support 100rel properly) -->
+  <X-PRE-PROCESS cmd="set" data="prack_enabled=${PRACK_ENABLED:-false}"/>
+  <X-PRE-PROCESS cmd="set" data="session_timer_enabled=${SESSION_TIMER_ENABLED:-true}"/>
+  <X-PRE-PROCESS cmd="set" data="session_timeout=${SESSION_TIMEOUT:-1800}"/>
+  <X-PRE-PROCESS cmd="set" data="min_se=${MIN_SE:-90}"/>
+  <X-PRE-PROCESS cmd="set" data="answer_delay_ms=${ANSWER_DELAY_MS:-200}"/>
+
+  <!-- RTP -->
+  <X-PRE-PROCESS cmd="set" data="rtp_start_port=${RTP_PORT_MIN:-16384}"/>
+  <X-PRE-PROCESS cmd="set" data="rtp_end_port=${RTP_PORT_MAX:-16584}"/>
+
+  <!-- Jitter Buffer -->
+  <X-PRE-PROCESS cmd="set" data="jb_init=${JB_INIT_MS:-100}"/>
+  <X-PRE-PROCESS cmd="set" data="jb_min=${JB_MIN_MS:-60}"/>
+  <X-PRE-PROCESS cmd="set" data="jb_max=${JB_MAX_MS:-500}"/>
+
+  <!-- PBX -->
+  <X-PRE-PROCESS cmd="set" data="pbx_host=${PBX_HOST:-}"/>
+  <X-PRE-PROCESS cmd="set" data="pbx_username=${PBX_USERNAME:-}"/>
+  <X-PRE-PROCESS cmd="set" data="pbx_password=${PBX_PASSWORD:-}"/>
+  <X-PRE-PROCESS cmd="set" data="pbx_register=${PBX_REGISTER:-false}"/>
+
+  <!--
+    PBX Standby (P-11: failover)
+    R-03: 빈 proxy 방어 — PBX_STANDBY_HOST가 빈 값이면 127.0.0.2(불가능 주소)로 설정하여
+    게이트웨이 로드 에러를 방지하고, register=false로 등록 시도를 차단합니다.
+    실제 failover는 Orchestrator의 useStandby 플래그(Q-03)로 제어됩니다.
+  -->
+  <X-PRE-PROCESS cmd="set" data="pbx_standby_host=${PBX_STANDBY_HOST:-127.0.0.2}"/>
+  <X-PRE-PROCESS cmd="set" data="pbx_standby_username=${PBX_STANDBY_USERNAME:-disabled}"/>
+  <X-PRE-PROCESS cmd="set" data="pbx_standby_password=${PBX_STANDBY_PASSWORD:-disabled}"/>
+  <X-PRE-PROCESS cmd="set" data="pbx_standby_register=${PBX_STANDBY_REGISTER:-false}"/>
+
+  <!-- Bridge -->
+  <X-PRE-PROCESS cmd="set" data="bridge_host=${BRIDGE_HOST:-127.0.0.1}"/>
+  <X-PRE-PROCESS cmd="set" data="bridge_ws_port=${BRIDGE_WS_PORT:-8090}"/>
+
+  <!-- Codec (P-05: G.711 first for PBX compatibility) -->
+  <X-PRE-PROCESS cmd="set" data="inbound_codec_prefs=${INBOUND_CODEC_PREFS:-PCMU@8000h@20i,PCMA@8000h@20i,G722@16000h@20i,opus@48000h@20i}"/>
+  <X-PRE-PROCESS cmd="set" data="outbound_codec_prefs=${OUTBOUND_CODEC_PREFS:-PCMU@8000h@20i,PCMA@8000h@20i,G722@16000h@20i,opus@48000h@20i}"/>
+
+  <!-- Hold Music (P-09: for early media / hold) -->
+  <X-PRE-PROCESS cmd="set" data="hold_music=${HOLD_MUSIC:-local_stream://moh}"/>
+
+  <!-- ESL -->
+  <X-PRE-PROCESS cmd="set" data="esl_password=${ESL_PASSWORD:-ClueCon}"/>
+</include>
