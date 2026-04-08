@@ -151,6 +151,32 @@ for port in 5060 5061 8021 8080 8090 8091; do
 done
 
 # ─────────────────────────────────────────
+# 5.5 NAT / Public IP (S-04)
+# ─────────────────────────────────────────
+echo ""
+echo "--- 5.5 NAT Configuration (S-04) ---"
+
+if [ -f .env ]; then
+    EXT_RTP=$(grep "^EXTERNAL_RTP_IP=" .env 2>/dev/null | cut -d'=' -f2- || echo "auto-nat")
+    EXT_SIP=$(grep "^EXTERNAL_SIP_IP=" .env 2>/dev/null | cut -d'=' -f2- || echo "auto-nat")
+
+    if [ "${EXT_RTP}" = "auto-nat" ] || [ "${EXT_SIP}" = "auto-nat" ]; then
+        PUBLIC_IP=$(curl -s --connect-timeout 3 ifconfig.me 2>/dev/null || echo "")
+        if [ -n "${PUBLIC_IP}" ]; then
+            warn "EXTERNAL_RTP_IP=auto-nat — NAT 환경에서 one-way audio 위험"
+            echo "    감지된 공인 IP: ${PUBLIC_IP}"
+            echo "    권장: EXTERNAL_RTP_IP=${PUBLIC_IP}"
+            echo "    권장: EXTERNAL_SIP_IP=${PUBLIC_IP}"
+        else
+            warn "EXTERNAL_RTP_IP=auto-nat (공인 IP 확인 불가 — 네트워크 확인 필요)"
+        fi
+    else
+        pass "EXTERNAL_RTP_IP=${EXT_RTP} (명시적 설정)"
+        pass "EXTERNAL_SIP_IP=${EXT_SIP} (명시적 설정)"
+    fi
+fi
+
+# ─────────────────────────────────────────
 # 6. VAD Model
 # ─────────────────────────────────────────
 echo ""

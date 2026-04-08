@@ -284,3 +284,57 @@ ping-min=1: OPTIONS 1회 성공 시 게이트웨이 UP 복구
 □ 게이트웨이 failover: 주 PBX 다운 → 대기 PBX 자동 전환
 □ 부하: 피크 시간 동시 콜 수 + 20% 마진으로 SIPp 테스트
 ```
+
+### 7.4 방화벽/NAT TCP 세션 타이머 (S-04, S-05)
+
+```
+SIP TCP/TLS 연결은 idle 상태에서 방화벽에 의해 끊길 수 있습니다.
+FreeSWITCH tcp-keepalive=60초가 설정되어 있어 대부분 안전합니다.
+
+방화벽별 TCP 세션 타이머:
+┌──────────────────┬─────────────────────┬─────────────────┐
+│ 환경             │ 기본 TCP 타이머     │ keepalive=60 OK?│
+├──────────────────┼─────────────────────┼─────────────────┤
+│ AWS Security Group│ 350초 (약 6분)     │ ✓ (충분)        │
+│ Azure NSG        │ 4분                 │ ✓               │
+│ GCP Firewall     │ 10분                │ ✓               │
+│ 일반 방화벽      │ 30분~1시간          │ ✓               │
+│ NAT 라우터       │ 5분~30분            │ ✓               │
+│ 엄격한 방화벽    │ 2분                 │ ✓ (60초 < 2분)  │
+└──────────────────┴─────────────────────┴─────────────────┘
+
+NAT 환경 (S-04):
+  EXTERNAL_RTP_IP와 EXTERNAL_SIP_IP를 반드시 공인 IP로 설정하세요.
+  auto-nat 사용 시 Docker host 내부 IP가 SDP에 포함되어
+  SBC가 RTP를 보낼 주소를 잘못 인식 → one-way audio 발생.
+
+  확인: curl ifconfig.me
+  설정: .env에 EXTERNAL_RTP_IP=<공인IP>, EXTERNAL_SIP_IP=<공인IP>
+```
+
+### 7.5 SIP 실패 코드 대응 가이드 (S-01)
+
+```
+Grafana에서 vbgw_call_hangup_total 메트릭으로 모니터링:
+
+┌────────────┬──────────────────────┬────────────────────────┐
+│ SIP Code   │ Hangup Cause         │ 대응                    │
+├────────────┼──────────────────────┼────────────────────────┤
+│ 200        │ NORMAL_CLEARING      │ 정상 종료              │
+│ 486        │ USER_BUSY            │ PBX 회선 포화 확인     │
+│ 408        │ NO_ANSWER            │ PBX 응답 불능 확인     │
+│ 480        │ NO_USER_RESPONSE     │ 상담원 미응답 (전환 실패)│
+│ 503        │ NORMAL_TEMP_FAILURE  │ PBX 과부하 → failover  │
+│ 603        │ CALL_REJECTED        │ PBX 수신 거부 정책     │
+│ unknown    │ ORIGINATOR_CANCEL    │ 고객이 먼저 끊음       │
+└────────────┴──────────────────────┴────────────────────────┘
+
+알람 조건:
+  rate(vbgw_call_hangup_total{sip_code="503"}[5m]) > 0.05  → PBX 과부하
+  rate(vbgw_call_hangup_total{sip_code="486"}[5m]) > 0.1   → 회선 포화
+  vbgw_sip_registration_alarm == 1                          → 게이트웨이 다운
+
+PDD (콜 셋업 시간) 알람:
+  histogram_quantile(0.95, rate(vbgw_call_setup_duration_seconds_bucket[5m])) > 3
+  → PDD P95가 3초 초과 시 PBX/네트워크 이상
+```

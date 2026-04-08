@@ -23,6 +23,10 @@
     <param name="stun-enabled" value="$${stun_enabled}"/>
     <param name="stun-auto-disable" value="true"/>
 
+    <!-- S-05: TCP/TLS keepalive (prevents NAT/firewall session timeout) -->
+    <param name="tcp-keepalive" value="60"/>
+    <param name="tls-keepalive" value="60"/>
+
     <!-- PRACK & Session Timer -->
     <param name="enable-100rel" value="$${prack_enabled}"/>
     <param name="enable-timer" value="$${session_timer_enabled}"/>

@@ -5,6 +5,7 @@
  * 변경 이력
  * ─────────────────────────────────────────
  * v1.0.0 | 2026-04-07 | [Implementer] | 최초 생성 | 기존 C++ 메트릭 1:1 매핑
+ * v1.1.0 | 2026-04-08 | [Implementer] | S-01~S-03 | SIP hangup, PDD, 등록 알람 메트릭
  * ─────────────────────────────────────────
  */
 
@@ -101,5 +102,24 @@ var (
 	RecordingCleanupBytes = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "vbgw_recording_cleanup_bytes_total",
 		Help: "Total bytes freed by recording cleanup",
+	})
+
+	// S-01: SIP hangup cause + SIP response code breakdown
+	CallHangupTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "vbgw_call_hangup_total",
+		Help: "Total call hangups by cause and SIP response code",
+	}, []string{"cause", "sip_code"})
+
+	// S-02: Call setup time (PDD — Post Dial Delay)
+	CallSetupDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "vbgw_call_setup_duration_seconds",
+		Help:    "Time from CHANNEL_CREATE to CHANNEL_ANSWER (PDD)",
+		Buckets: []float64{0.1, 0.25, 0.5, 1, 2, 3, 5, 10},
+	})
+
+	// S-03: PBX gateway registration alarm
+	SipRegistrationAlarm = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "vbgw_sip_registration_alarm",
+		Help: "PBX gateway registration alarm (0=ok, 1=alarm — unregistered 3+ min)",
 	})
 )

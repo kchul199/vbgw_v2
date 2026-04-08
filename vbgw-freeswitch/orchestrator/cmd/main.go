@@ -103,46 +103,72 @@ func main() {
 	)
 	go cleaner.Run(ctx)
 
-	// P-15 + R-04: Sofia gateway health monitor
-	// R-04: 별도 goroutine에서 SendAPI 실행 후 타임아웃 제한하여 Lock 경합 최소화
+	// P-15 + R-04 + S-03: Sofia gateway health monitor with consecutive failure alarm
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
+
+		const alarmThreshold = 6 // 6 consecutive failures = 3 minutes
+		consecutiveFails := 0
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				registered := false
+
 				if !eslClient.IsConnected() {
 					metrics.SipRegistered.Set(0)
-					continue
-				}
-				// R-04: 비동기 실행으로 mu Lock 점유 시간을 모니터 goroutine에 국한
-				resultCh := make(chan string, 1)
-				go func() {
-					resp, err := eslClient.SendAPI("sofia status gateway pbx-main")
-					if err != nil {
-						resultCh <- ""
+				} else {
+					resultCh := make(chan string, 1)
+					go func() {
+						resp, err := eslClient.SendAPI("sofia status gateway pbx-main")
+						if err != nil {
+							resultCh <- ""
+							return
+						}
+						resultCh <- resp
+					}()
+
+					select {
+					case resp := <-resultCh:
+						if resp != "" && strings.Contains(resp, "REGED") {
+							registered = true
+							metrics.SipRegistered.Set(1)
+						} else {
+							metrics.SipRegistered.Set(0)
+							if resp != "" {
+								slog.Warn("PBX gateway not registered", "status", strings.TrimSpace(resp))
+							}
+						}
+					case <-time.After(5 * time.Second):
+						slog.Warn("Sofia status check timeout (5s)")
+						metrics.SipRegistered.Set(0)
+					case <-ctx.Done():
 						return
 					}
-					resultCh <- resp
-				}()
+				}
 
-				select {
-				case resp := <-resultCh:
-					if resp == "" {
-						metrics.SipRegistered.Set(0)
-					} else if strings.Contains(resp, "REGED") {
-						metrics.SipRegistered.Set(1)
-					} else {
-						slog.Warn("PBX gateway not registered", "status", strings.TrimSpace(resp))
-						metrics.SipRegistered.Set(0)
+				// S-03: Consecutive failure alarm logic
+				if registered {
+					if consecutiveFails >= alarmThreshold {
+						slog.Info("ALARM CLEARED: PBX gateway re-registered",
+							"was_down_checks", consecutiveFails)
 					}
-				case <-time.After(5 * time.Second):
-					slog.Warn("Sofia status check timeout (5s)")
-					metrics.SipRegistered.Set(0)
-				case <-ctx.Done():
-					return
+					consecutiveFails = 0
+					metrics.SipRegistrationAlarm.Set(0)
+				} else {
+					consecutiveFails++
+					if consecutiveFails == alarmThreshold {
+						slog.Error("ALARM: PBX gateway registration lost for 3+ minutes",
+							"consecutive_fails", consecutiveFails,
+							"action", "All outbound calls will fail. Check PBX connectivity.")
+						metrics.SipRegistrationAlarm.Set(1)
+					} else if consecutiveFails > alarmThreshold && consecutiveFails%10 == 0 {
+						slog.Error("ALARM ONGOING: PBX gateway still unregistered",
+							"consecutive_fails", consecutiveFails)
+					}
 				}
 			}
 		}
@@ -265,8 +291,14 @@ func onChannelAnswer(evt *esl.Event, sessionMgr *session.Manager) {
 	if !ok {
 		return
 	}
-	s.SetAnsweredAt(time.Now())
-	slog.Info("CHANNEL_ANSWER", "session_id", s.SessionID)
+	now := time.Now()
+	s.SetAnsweredAt(now)
+
+	// S-02: Record PDD (Post Dial Delay) — time from CREATE to ANSWER
+	pdd := now.Sub(s.CreatedAt).Seconds()
+	metrics.CallSetupDuration.Observe(pdd)
+
+	slog.Info("CHANNEL_ANSWER", "session_id", s.SessionID, "pdd_ms", int(pdd*1000))
 }
 
 func onChannelPark(evt *esl.Event, sessionMgr *session.Manager, eslClient *esl.Client, cfg *config.Config) {
@@ -350,7 +382,15 @@ func onChannelHangup(evt *esl.Event, sessionMgr *session.Manager) {
 	sessionMgr.Release(s.SessionID)
 	metrics.ActiveCalls.Set(float64(sessionMgr.Count()))
 
-	// P-08: Log SIP termination status for outbound call failure diagnosis
+	// S-01: SIP hangup cause + code breakdown metric
+	if sipCode == "" {
+		sipCode = "unknown"
+	}
+	if hangupCause == "" {
+		hangupCause = "UNKNOWN"
+	}
+	metrics.CallHangupTotal.WithLabelValues(hangupCause, sipCode).Inc()
+
 	slog.Info("CHANNEL_HANGUP", "session_id", s.SessionID, "cause", hangupCause, "sip_code", sipCode)
 }
 
