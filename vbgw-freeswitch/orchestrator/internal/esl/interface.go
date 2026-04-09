@@ -5,6 +5,7 @@
  * 변경 이력
  * ─────────────────────────────────────────
  * v1.0.0 | 2026-04-09 | [Implementer] | 최초 생성 | api 패키지 테스트용 인터페이스 추출
+ * v1.1.0 | 2026-04-09 | [Implementer] | FS-2,FS-3 | Eavesdrop, Conference, AttendedTransfer 추가
  * ─────────────────────────────────────────
  */
 
@@ -26,6 +27,11 @@ type Commander interface {
 	Pause() error
 	Resume() error
 	IsConnected() bool
+	// FS-2: Supervisor monitoring
+	Eavesdrop(supervisorUUID, targetUUID string) error
+	ConferenceKick(confName, memberID string) error
+	// FS-3: Attended (consultative) transfer
+	AttendedTransfer(uuid, target string) error
 }
 
 // Verify *Client implements Commander at compile time.

@@ -63,6 +63,11 @@
   <!-- T-06: Audio fork WS/WSS scheme (default ws, prod should use wss) -->
   <X-PRE-PROCESS cmd="set" data="audio_fork_scheme=${AUDIO_FORK_SCHEME:-ws}"/>
 
+  <!-- ACL (FS-1: mod_acl — SIP source IP restriction) -->
+  <!-- Production: set to exact PBX/SBC IPs (e.g., 10.10.1.100/32) -->
+  <X-PRE-PROCESS cmd="set" data="pbx_acl_ip1=${PBX_ACL_IP1:-0.0.0.0/0}"/>
+  <X-PRE-PROCESS cmd="set" data="pbx_acl_ip2=${PBX_ACL_IP2:-0.0.0.0/0}"/>
+
   <!-- ESL — T-05: No fallback. ESL_PASSWORD MUST be set via environment variable.
        If empty, event_socket.conf.xml will use a blank password which blocks all ESL access.
        Generate with: openssl rand -hex 16 -->

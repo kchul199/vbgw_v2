@@ -51,6 +51,9 @@ services:
       - ESL_PASSWORD=${ESL_PASSWORD}
       # T-06: Audio fork TLS scheme (ws or wss)
       - AUDIO_FORK_SCHEME=${AUDIO_FORK_SCHEME:-ws}
+      # FS-1: SIP ACL — restrict to PBX IPs (default 0.0.0.0/0 = allow all for dev)
+      - PBX_ACL_IP1=${PBX_ACL_IP1:-0.0.0.0/0}
+      - PBX_ACL_IP2=${PBX_ACL_IP2:-0.0.0.0/0}
     # T-15: Enhanced healthcheck — verify Sofia SIP profile is actually running
     healthcheck:
       test: ["CMD", "sh", "-c", "fs_cli -x 'sofia status' | grep -q 'RUNNING' && fs_cli -x 'status' | grep -q 'UP'"]

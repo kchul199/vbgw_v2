@@ -5,6 +5,7 @@
  * 변경 이력
  * ─────────────────────────────────────────
  * v1.0.0 | 2026-04-07 | [Implementer] | 최초 생성 | 12개 ESL 명령 래퍼
+ * v1.1.0 | 2026-04-09 | [Implementer] | FS-2,FS-3 | Eavesdrop, Conference, AttendedTransfer 추가
  * ─────────────────────────────────────────
  */
 
@@ -126,5 +127,25 @@ func (c *Client) Resume() error {
 // Hupall hangs up all active calls.
 func (c *Client) Hupall() error {
 	_, err := c.SendAPI("hupall")
+	return err
+}
+
+// FS-2: Eavesdrop allows a supervisor to listen to a call.
+// mode: "r" (listen only), "w" (whisper to agent), "rw" (full duplex).
+func (c *Client) Eavesdrop(supervisorUUID, targetUUID string) error {
+	_, err := c.SendAPI(fmt.Sprintf("uuid_transfer %s 'eavesdrop::%s' inline", supervisorUUID, targetUUID))
+	return err
+}
+
+// FS-2: ConferenceKick removes a participant from a conference.
+func (c *Client) ConferenceKick(confName, memberID string) error {
+	_, err := c.SendAPI(fmt.Sprintf("conference %s kick %s", confName, memberID))
+	return err
+}
+
+// FS-3: AttendedTransfer performs a two-step attended (consultative) transfer.
+// Step 1: Bridge supervisor to target, Step 2: Transfer original call.
+func (c *Client) AttendedTransfer(uuid, target string) error {
+	_, err := c.SendAPI(fmt.Sprintf("uuid_transfer %s 'att_xfer::{origination_caller_id_name=Transfer}sofia/gateway/pbx-main/%s' inline", uuid, target))
 	return err
 }

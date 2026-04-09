@@ -82,6 +82,12 @@ func NewRouter(cfg *config.Config, eslClient *esl.Client, sessions *session.Mana
 		// E-10: GET /api/v1/calls/{id}/stats
 		r.Get("/api/v1/calls/{id}/stats", statsHandler.GetStats)
 
+		// FS-2: POST /api/v1/calls/{id}/eavesdrop — supervisor monitoring
+		r.Post("/api/v1/calls/{id}/eavesdrop", controlHandler.Eavesdrop)
+
+		// FS-3: POST /api/v1/calls/{id}/attended-transfer — consultative transfer
+		r.Post("/api/v1/calls/{id}/attended-transfer", controlHandler.AttendedTransfer)
+
 		// E-11: POST /api/v1/calls/bridge
 		r.Post("/api/v1/calls/bridge", controlHandler.BridgeCalls)
 

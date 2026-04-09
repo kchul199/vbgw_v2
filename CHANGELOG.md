@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## [v3.1.0] - 2026-04-09
+### 페르소나: [Implementer]
+### 작업 유형: 기능추가 — FreeSWITCH 추가 모듈 적용 (mod_acl, mod_conference, attended_transfer)
+
+#### Added
+- `config/freeswitch/autoload_configs/acl.conf.xml`: FS-1 SIP 소스 IP ACL — PBX/SBC IP만 INVITE 허용
+- `config/freeswitch/autoload_configs/conference.conf.xml`: FS-2 Conference 프로파일 (supervisor/three-way)
+- `esl/commands.go`: FS-2 Eavesdrop(), ConferenceKick() + FS-3 AttendedTransfer() ESL 명령 추가
+- `esl/interface.go`: Commander 인터페이스에 Eavesdrop/ConferenceKick/AttendedTransfer 추가
+- `api/control.go`: POST /api/v1/calls/{id}/eavesdrop (감독자 감청)
+- `api/control.go`: POST /api/v1/calls/{id}/attended-transfer (안내 전환)
+- `api/server.go`: 2개 엔드포인트 라우터 등록
+
+#### Changed
+- `config/freeswitch/sip_profiles/internal.xml`: apply-inbound-acl="pbx-acl" 추가
+- `config/freeswitch/vars.xml`: PBX_ACL_IP1/IP2 환경변수 추가
+- `docker-compose.yml`: PBX_ACL_IP1/IP2 환경변수 전달
+- `.env.example`: SIP ACL 가이드 추가
+
+---
+
 ## [v3.0.0] - 2026-04-09
 ### 페르소나: [QA Engineer + Implementer]
 ### 작업 유형: 기능추가 — 테스트 커버리지 80% + E2E + 운영 문서

@@ -247,6 +247,64 @@ func (h *ControlHandler) BargeIn(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, `{"status":"break_sent"}`)
 }
 
+// FS-2: Eavesdrop handles POST /api/v1/calls/{id}/eavesdrop — supervisor monitoring.
+func (h *ControlHandler) Eavesdrop(w http.ResponseWriter, r *http.Request) {
+	callID := chi.URLParam(r, "id")
+	s, ok := h.Sessions.Get(callID)
+	if !ok {
+		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		SupervisorUUID string `json:"supervisor_uuid"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SupervisorUUID == "" {
+		http.Error(w, `{"error":"supervisor_uuid required"}`, http.StatusBadRequest)
+		return
+	}
+
+	if err := h.ESL.Eavesdrop(req.SupervisorUUID, s.FSUUID); err != nil {
+		slog.Error("Eavesdrop failed", "err", err)
+		http.Error(w, `{"error":"eavesdrop failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("Eavesdrop started", "session_id", s.SessionID, "supervisor", req.SupervisorUUID)
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `{"status":"eavesdropping"}`)
+}
+
+// FS-3: AttendedTransfer handles POST /api/v1/calls/{id}/attended-transfer.
+func (h *ControlHandler) AttendedTransfer(w http.ResponseWriter, r *http.Request) {
+	callID := chi.URLParam(r, "id")
+	s, ok := h.Sessions.Get(callID)
+	if !ok {
+		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+		return
+	}
+
+	var req transferRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Target == "" {
+		http.Error(w, `{"error":"target required"}`, http.StatusBadRequest)
+		return
+	}
+	if !sipTargetPattern.MatchString(req.Target) {
+		http.Error(w, `{"error":"invalid target format"}`, http.StatusBadRequest)
+		return
+	}
+
+	if err := h.ESL.AttendedTransfer(s.FSUUID, req.Target); err != nil {
+		slog.Error("Attended transfer failed", "err", err)
+		http.Error(w, `{"error":"attended transfer failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("Attended transfer initiated", "session_id", s.SessionID, "target", req.Target)
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `{"status":"transferring"}`)
+}
+
 func (h *ControlHandler) notifyBridge(action, uuid string) {
 	url := fmt.Sprintf("%s/internal/%s/%s", h.BridgeURL, action, uuid)
 	req, _ := http.NewRequest("POST", url, nil)

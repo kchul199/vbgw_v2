@@ -67,6 +67,9 @@
     <param name="calls-per-second" value="30"/>
     <param name="sip-options-respond-503-on-busy" value="true"/>
 
+    <!-- FS-1: SIP ACL — restrict inbound INVITE to PBX/SBC IPs only -->
+    <param name="apply-inbound-acl" value="pbx-acl"/>
+
     <!-- SIP User-Agent header (stripped of FS name for security — L-01) -->
     <param name="user-agent-string" value="VBGW/1.0"/>
   </settings>

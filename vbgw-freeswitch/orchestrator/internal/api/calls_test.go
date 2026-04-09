@@ -40,6 +40,9 @@ func (m *mockESL) Dump(uuid string) (map[string]string, error) { return m.dumpRe
 func (m *mockESL) Pause() error                             { return nil }
 func (m *mockESL) Resume() error                            { return nil }
 func (m *mockESL) IsConnected() bool                        { return m.connected }
+func (m *mockESL) Eavesdrop(supervisorUUID, targetUUID string) error { return nil }
+func (m *mockESL) ConferenceKick(confName, memberID string) error    { return nil }
+func (m *mockESL) AttendedTransfer(uuid, target string) error        { return m.transferErr }
 
 func TestCreateCall_Success(t *testing.T) {
 	sessions := session.NewManager(100)
