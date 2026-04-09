@@ -1,5 +1,38 @@
 # CHANGELOG
 
+## [v3.0.0] - 2026-04-09
+### 페르소나: [QA Engineer + Implementer]
+### 작업 유형: 기능추가 — 테스트 커버리지 80% + E2E + 운영 문서
+
+#### Added (P1: 테스트 커버리지)
+- `orchestrator/internal/esl/interface.go`: ESL Commander 인터페이스 추출 (테스트 mock 지원)
+- `orchestrator/internal/api/middleware_test.go`: Auth, RateLimit, Loopback, Metrics 미들웨어 테스트 8개
+- `orchestrator/internal/api/calls_test.go`: CreateCall 성공/실패/용량초과/JSON/ESL에러 + maskURI 테스트 7개
+- `orchestrator/internal/api/control_test.go`: DTMF/Transfer/Record/Bridge/BargeIn 테스트 9개
+- `orchestrator/internal/api/stats_test.go`: GetStats 성공/404/ESL에러 테스트 3개
+- `orchestrator/internal/esl/client_test.go`: Client 생성/연결/콜백/apiRespCh/Commander 인터페이스 테스트 8개
+- `bridge/internal/grpc/client_test.go`: Pool/Stream Send/Recv/DTMF/컨텍스트 테스트 10개
+- `bridge/internal/ws/server_test.go`: Internal API (health/pause/resume/dtmf/shutdown) 테스트 7개
+- `bridge/internal/ws/session_test.go`: AI pause/채널 오버플로우/용량 테스트 4개
+
+#### Added (P2: E2E + 운영 문서)
+- `scripts/run_tc_all.sh`: TC-09~TC-13 추가 (동시 콜, DTMF 검증, 녹음 API, Transfer, 메트릭 완전성)
+- `docs/troubleshooting.md`: 증상별 진단 매트릭스 (one-way audio, 끊김, DTMF, 지연, 503)
+- `docs/grafana_queries.md`: Prometheus PromQL 쿼리 12개 + 알람 조건 테이블
+
+#### Changed
+- `orchestrator/internal/api/calls.go`: ESL 필드 `*esl.Client` → `esl.Commander` 인터페이스
+- `orchestrator/internal/api/control.go`: ESL 필드 `*esl.Client` → `esl.Commander` 인터페이스
+- `orchestrator/internal/api/stats.go`: ESL 필드 `*esl.Client` → `esl.Commander` 인터페이스
+
+#### 테스트 요약
+- 이전: 78개 (14 파일) → 현재: **133개 (22 파일)**
+- 신규 테스트: 55개
+- Orchestrator: 89개 (7 패키지)
+- Bridge: 44개 (6 패키지)
+
+---
+
 ## [v2.9.0] - 2026-04-09
 ### 페르소나: [Implementer]
 ### 작업 유형: 보안수정 + 버그수정 + 기능추가 — 프로덕션 전체 리뷰 28개 이슈 반영

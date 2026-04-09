@@ -33,7 +33,7 @@ var (
 
 // ControlHandler handles call control endpoints.
 type ControlHandler struct {
-	ESL        *esl.Client
+	ESL        esl.Commander
 	Sessions   *session.Manager
 	BridgeURL  string
 	httpClient *http.Client

@@ -25,9 +25,9 @@ import (
 
 // CallsHandler handles outbound call requests.
 type CallsHandler struct {
-	ESL            *esl.Client
-	Sessions       *session.Manager
-	UseStandbyGW   bool // Q-03: true if PBX_STANDBY_HOST is configured
+	ESL          esl.Commander
+	Sessions     *session.Manager
+	UseStandbyGW bool // Q-03: true if PBX_STANDBY_HOST is configured
 }
 
 type createCallRequest struct {

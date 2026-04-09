@@ -22,7 +22,7 @@ import (
 
 // StatsHandler handles call statistics requests.
 type StatsHandler struct {
-	ESL      *esl.Client
+	ESL      esl.Commander
 	Sessions *session.Manager
 }
 
