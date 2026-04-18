@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"strings"
@@ -347,9 +348,11 @@ func (c *Client) readEventData() (string, error) {
 
 	if contentLength > 0 {
 		body := make([]byte, contentLength)
-		_, err := c.reader.Read(body)
+		// C-5 FIX: io.ReadFull ensures the entire body is read,
+		// preventing short reads on large ESL events (e.g. CHANNEL_DATA).
+		_, err := io.ReadFull(c.reader, body)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("ESL body read (Content-Length: %d): %w", contentLength, err)
 		}
 		return headerStr + "\n" + string(body), nil
 	}

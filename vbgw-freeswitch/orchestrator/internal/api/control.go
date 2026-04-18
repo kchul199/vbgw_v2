@@ -366,12 +366,23 @@ func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr 
 	switch msg.Action {
 	case "dtmf":
 		var req dtmfRequest
-		json.Unmarshal(msg.Payload, &req)
-		eslClient.SendDtmf(s.FSUUID, req.Digits)
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			slog.Error("PubSub dtmf payload parse failed", "err", err)
+			return
+		}
+		if err := eslClient.SendDtmf(s.FSUUID, req.Digits); err != nil {
+			slog.Error("PubSub dtmf execution failed", "session_id", msg.SessionID, "err", err)
+		}
+
 	case "transfer":
 		var req transferRequest
-		json.Unmarshal(msg.Payload, &req)
-		eslClient.Transfer(s.FSUUID, req.Target)
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			slog.Error("PubSub transfer payload parse failed", "err", err)
+			return
+		}
+		if err := eslClient.Transfer(s.FSUUID, req.Target); err != nil {
+			slog.Error("PubSub transfer execution failed", "session_id", msg.SessionID, "err", err)
+		}
 		if s.IvrEventCh != nil {
 			select {
 			case <-s.Ctx.Done():
@@ -379,10 +390,29 @@ func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr 
 			default:
 			}
 		}
+
 	case "record_start":
 		path := fmt.Sprintf("/recordings/%s.wav", s.SessionID)
-		eslClient.RecordStart(s.FSUUID, path)
+		if err := eslClient.RecordStart(s.FSUUID, path); err != nil {
+			slog.Error("PubSub record_start failed", "session_id", msg.SessionID, "err", err)
+			return
+		}
 		s.SetRecordPath(path)
-		// save to redis...
+		// Persist updated session state to Redis
+		if saver, ok := sessionMgr.(*session.RedisStore); ok {
+			if err := saver.SaveSession(ctx, s); err != nil {
+				slog.Error("Failed to persist session after record_start", "err", err)
+			}
+		}
+
+	case "record_stop":
+		if err := eslClient.RecordStop(s.FSUUID); err != nil {
+			slog.Error("PubSub record_stop failed", "session_id", msg.SessionID, "err", err)
+			return
+		}
+		s.SetRecordPath("")
+
+	default:
+		slog.Warn("Unknown PubSub command action", "action", msg.Action, "session_id", msg.SessionID)
 	}
 }

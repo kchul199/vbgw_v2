@@ -56,11 +56,17 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize Redis session manager
-	sessionMgr, err := session.NewRedisStore(cfg.RedisAddr, cfg.RedisPass, cfg.RedisDB, cfg.MaxSessions, nodeID)
+	// Initialize session manager (Redis primary, Memory fallback)
+	// C-3 FIX: Redis 연결 실패 시 MemoryStore로 자동 폴백하여 게이트웨이 가용성 유지
+	var sessionMgr session.Store
+	redisMgr, err := session.NewRedisStore(cfg.RedisAddr, cfg.RedisPass, cfg.RedisDB, cfg.MaxSessions, nodeID)
 	if err != nil {
-		slog.Error("Redis connection failed", "err", err)
-		os.Exit(1)
+		slog.Error("Redis connection failed — falling back to in-memory session store",
+			"redis_addr", cfg.RedisAddr, "err", err,
+			"impact", "Multi-node session sync and Pub/Sub command routing will be unavailable")
+		sessionMgr = session.NewMemoryStore(cfg.MaxSessions)
+	} else {
+		sessionMgr = redisMgr
 	}
 
 	// Connect ESL (eslClient used in handler closure, declared first)

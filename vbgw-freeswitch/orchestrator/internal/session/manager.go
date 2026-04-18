@@ -1,24 +1,16 @@
 /**
  * @file manager.go
- * @description 세션 매니저 인터페이스 (Redis/Memory 구현체 추상화)
+ * @description 레거시 호환용 Manager 별칭 (실제 인터페이스는 repository.go의 Store)
+ *
+ * 변경 이력
+ * ─────────────────────────────────────────
+ * v1.0.0 | 2026-04-07 | 최초 생성 | NewManager + in-memory 세션
+ * v1.2.0 | 2026-04-19 | 데드코드 정리 | Manager interface 제거, Store로 통합
+ * ─────────────────────────────────────────
  */
 
 package session
 
-import (
-	"context"
-)
-
-// Manager manages active call sessions.
-type Manager interface {
-	TryAcquire(ctx context.Context) bool
-	AddIfUnderCapacity(ctx context.Context, s *SessionState) bool
-	Get(ctx context.Context, sessionID string) (*SessionState, bool)
-	GetByFSUUID(ctx context.Context, fsUUID string) (*SessionState, bool)
-	Release(ctx context.Context, sessionID string)
-	Count(ctx context.Context) int64
-	WaitAllDrained(ctx context.Context, killFn func(fsUUID string))
-	ForEachLocal(fn func(s *SessionState))
-	PublishCommand(ctx context.Context, targetNodeID, sessionID, action string, payload interface{}) error
-	SubscribeCommands(ctx context.Context, handler func(msg CommandMsg))
-}
+// Manager is a backward-compatible alias for Store.
+// All new code should use Store directly.
+type Manager = Store

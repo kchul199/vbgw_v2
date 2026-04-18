@@ -1,6 +1,15 @@
 /**
  * @file repository.go
  * @description Redis 기반의 세션 저장소 및 Pub/Sub 인터페이스
+ *
+ * 변경 이력
+ * ─────────────────────────────────────────
+ * v1.0.0 | 2026-04-07 | 최초 생성
+ * v1.1.0 | 2026-04-18 | Redis TryAcquire, Store interface
+ * v1.2.0 | 2026-04-19 | C-1: sync.RWMutex 동시성 보호
+ *                      | C-2: Lua Script 원자적 Capacity Check
+ *                      | Store interface에 PublishCommand/SubscribeCommands 통합
+ * ─────────────────────────────────────────
  */
 
 package session
@@ -10,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -17,7 +27,8 @@ import (
 
 var ErrCapacityExceeded = errors.New("capacity exceeded")
 
-// Store defines the interface for session management
+// Store defines the unified interface for session management.
+// Merges the previous separate Manager and Store interfaces.
 type Store interface {
 	TryAcquire(ctx context.Context) bool
 	AddIfUnderCapacity(ctx context.Context, s *SessionState) bool
@@ -27,15 +38,33 @@ type Store interface {
 	Count(ctx context.Context) int64
 	WaitAllDrained(ctx context.Context, killFn func(fsUUID string))
 	ForEachLocal(fn func(s *SessionState))
+	PublishCommand(ctx context.Context, targetNodeID, sessionID, action string, payload interface{}) error
+	SubscribeCommands(ctx context.Context, handler func(msg CommandMsg))
 }
 
+// luaTryAcquire is an atomic Lua script for capacity check + increment.
+// It eliminates the INCR→check→DECR race condition (C-2).
+// Returns 1 if acquired, 0 if capacity exceeded.
+var luaTryAcquire = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if current == false then current = 0 else current = tonumber(current) end
+if current < tonumber(ARGV[1]) then
+    redis.call('INCR', KEYS[1])
+    return 1
+end
+return 0
+`)
+
 // RedisStore implements the Store interface using Redis.
+// C-1 FIX: All localMap/localByUUID access is protected by mu (sync.RWMutex).
 type RedisStore struct {
-	client      *redis.Client
-	nodeID      string
-	maxCalls    int64
-	localMap    map[string]*SessionState // track local context references
-	localByUUID map[string]string
+	client   *redis.Client
+	nodeID   string
+	maxCalls int64
+
+	mu          sync.RWMutex                // C-1: protects localMap and localByUUID
+	localMap    map[string]*SessionState    // session_id → *SessionState
+	localByUUID map[string]string           // fs_uuid → session_id
 }
 
 // NewRedisStore creates a new Redis-backed session store.
@@ -60,19 +89,15 @@ func NewRedisStore(addr, pass string, db int, maxCalls int64, nodeID string) (*R
 	}, nil
 }
 
-// TryAcquire atomically checks and increments the session counter via Redis INCR.
+// TryAcquire atomically checks capacity and increments via Lua script.
+// C-2 FIX: Single atomic Redis operation eliminates INCR/DECR race.
 func (rs *RedisStore) TryAcquire(ctx context.Context) bool {
-	// Simple atomic check with INCR
-	val, err := rs.client.Incr(ctx, "vbgw:active_calls").Result()
+	result, err := luaTryAcquire.Run(ctx, rs.client, []string{"vbgw:active_calls"}, rs.maxCalls).Int()
 	if err != nil {
-		slog.Error("Redis INCR failed", "err", err)
+		slog.Error("Redis Lua TryAcquire failed", "err", err)
 		return false
 	}
-	if val > rs.maxCalls {
-		rs.client.Decr(ctx, "vbgw:active_calls") // Revert
-		return false
-	}
-	return true
+	return result == 1
 }
 
 func (rs *RedisStore) saveToRedis(ctx context.Context, s *SessionState) error {
@@ -87,7 +112,7 @@ func (rs *RedisStore) saveToRedis(ctx context.Context, s *SessionState) error {
 	if err != nil {
 		return err
 	}
-	
+
 	pipe := rs.client.Pipeline()
 	pipe.Set(ctx, "vbgw:session:"+s.SessionID, data, 24*time.Hour)
 	if s.FSUUID != "" {
@@ -108,17 +133,23 @@ func (rs *RedisStore) AddIfUnderCapacity(ctx context.Context, s *SessionState) b
 		return false
 	}
 
-	// Save to local registry so channels/ctx can be accessed
+	// C-1 FIX: Protect local map writes with mutex
+	rs.mu.Lock()
 	rs.localMap[s.SessionID] = s
 	if s.FSUUID != "" {
 		rs.localByUUID[s.FSUUID] = s.SessionID
 	}
+	rs.mu.Unlock()
 	return true
 }
 
-// Get finds session data from Local map if present, else from Redis.
+// Get finds session data from local map if present, else from Redis.
 func (rs *RedisStore) Get(ctx context.Context, sessionID string) (*SessionState, bool) {
-	if s, ok := rs.localMap[sessionID]; ok {
+	// C-1 FIX: Protect local map reads with RLock
+	rs.mu.RLock()
+	s, ok := rs.localMap[sessionID]
+	rs.mu.RUnlock()
+	if ok {
 		return s, true
 	}
 
@@ -140,7 +171,11 @@ func (rs *RedisStore) Get(ctx context.Context, sessionID string) (*SessionState,
 }
 
 func (rs *RedisStore) GetByFSUUID(ctx context.Context, fsUUID string) (*SessionState, bool) {
-	if sid, ok := rs.localByUUID[fsUUID]; ok {
+	// C-1 FIX: Protect local map reads with RLock
+	rs.mu.RLock()
+	sid, ok := rs.localByUUID[fsUUID]
+	rs.mu.RUnlock()
+	if ok {
 		return rs.Get(ctx, sid)
 	}
 
@@ -152,21 +187,33 @@ func (rs *RedisStore) GetByFSUUID(ctx context.Context, fsUUID string) (*SessionS
 }
 
 func (rs *RedisStore) Release(ctx context.Context, sessionID string) {
-	// Pop from local
-	if s, loaded := rs.localMap[sessionID]; loaded {
+	// C-1 FIX: Protect local map delete with full Lock
+	rs.mu.Lock()
+	s, loaded := rs.localMap[sessionID]
+	if loaded {
+		delete(rs.localMap, sessionID)
+		if s.FSUUID != "" {
+			delete(rs.localByUUID, s.FSUUID)
+		}
+	}
+	rs.mu.Unlock()
+
+	if loaded {
 		if s.IvrEventCh != nil {
 			close(s.IvrEventCh)
 			s.IvrEventCh = nil
 		}
 		s.Cancel()
-		delete(rs.localByUUID, s.FSUUID)
-		delete(rs.localMap, sessionID)
-		
+
 		pipe := rs.client.Pipeline()
 		pipe.Del(ctx, "vbgw:session:"+sessionID)
-		pipe.Del(ctx, "vbgw:fsuuid:"+s.FSUUID)
+		if s.FSUUID != "" {
+			pipe.Del(ctx, "vbgw:fsuuid:"+s.FSUUID)
+		}
 		pipe.Decr(ctx, "vbgw:active_calls")
-		pipe.Exec(ctx)
+		if _, err := pipe.Exec(ctx); err != nil {
+			slog.Error("Redis release pipeline failed", "session_id", sessionID, "err", err)
+		}
 	}
 }
 
@@ -183,14 +230,27 @@ func (rs *RedisStore) WaitAllDrained(ctx context.Context, killFn func(fsUUID str
 	defer ticker.Stop()
 
 	for {
-		if len(rs.localMap) == 0 {
+		// C-1 FIX: Protect len() read
+		rs.mu.RLock()
+		remaining := len(rs.localMap)
+		rs.mu.RUnlock()
+
+		if remaining == 0 {
 			slog.Info("All local sessions drained")
 			return
 		}
 		select {
 		case <-ctx.Done():
-			slog.Warn("Drain timeout", "remaining_local", len(rs.localMap))
+			slog.Warn("Drain timeout", "remaining_local", remaining)
+			// Collect sessions to kill (snapshot under lock)
+			rs.mu.RLock()
+			toKill := make([]*SessionState, 0, len(rs.localMap))
 			for _, s := range rs.localMap {
+				toKill = append(toKill, s)
+			}
+			rs.mu.RUnlock()
+
+			for _, s := range toKill {
 				if killFn != nil && s.FSUUID != "" {
 					killFn(s.FSUUID)
 				}
@@ -198,13 +258,27 @@ func (rs *RedisStore) WaitAllDrained(ctx context.Context, killFn func(fsUUID str
 			}
 			return
 		case <-ticker.C:
-			slog.Info("Draining local sessions", "remaining", len(rs.localMap))
+			slog.Info("Draining local sessions", "remaining", remaining)
 		}
 	}
 }
 
 func (rs *RedisStore) ForEachLocal(fn func(s *SessionState)) {
+	// C-1 FIX: Snapshot under RLock, then iterate outside lock
+	rs.mu.RLock()
+	snapshot := make([]*SessionState, 0, len(rs.localMap))
 	for _, s := range rs.localMap {
+		snapshot = append(snapshot, s)
+	}
+	rs.mu.RUnlock()
+
+	for _, s := range snapshot {
 		fn(s)
 	}
+}
+
+// SaveSession persists a session state update to Redis.
+// Used by HandleLocalCommand after mutating session fields.
+func (rs *RedisStore) SaveSession(ctx context.Context, s *SessionState) error {
+	return rs.saveToRedis(ctx, s)
 }
