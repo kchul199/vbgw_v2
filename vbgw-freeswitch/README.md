@@ -39,16 +39,22 @@ PBX / SBC
             | ESL (TCP 8021)            WebSocket (8090)
             v                           |
 +-----------------------+               |
-| Tier 2: Orchestrator  |  <-- 콜 제어, 세션 관리, REST API
-| (Go, port 8080)       |      ESL 명령, IVR FSM, CDR
+| Tier 2: Orchestrator  |  <-- 콜 제어, 세션 관리, REST API (JWT)
+| (Go, port 8080)       |      Redis Pub/Sub, OTel Tracing
 +-----------+-----------+
+            |      ^
+            |      | Redis (State/Queue)
+            |      v
+            |  +-----------------------+
+            |  | External: Redis       |
+            |  +-----------------------+
             |
             | HTTP (8091)
             v
 +-----------------------+       gRPC Bi-dir Stream
 | Tier 3: Bridge        |  --> AI Engine (STT/TTS/NLU)
 | (Go, port 8090/8091)  |      Silero VAD, 오디오 파이프라인
-+-----------------------+       (port 50051)
++-----------------------+       OpenTelemetry Exporter
 ```
 
 ### 각 서비스 역할
@@ -56,8 +62,9 @@ PBX / SBC
 | 서비스 | 역할 | 포트 |
 |--------|------|------|
 | **FreeSWITCH** | SIP 시그널링, RTP 미디어 수신/송신, 코덱 처리, DTMF | 5060 (SIP), 5061 (TLS), 16384-16584 (RTP) |
-| **Orchestrator** | REST API, ESL 명령 제어, 세션 관리, IVR 상태머신, CDR 로깅 | 8080 (HTTP API) |
-| **Bridge** | WebSocket 오디오 수신, VAD 추론, gRPC AI 스트리밍, TTS 재생 | 8090 (WS), 8091 (Internal) |
+| **Orchestrator** | REST API, ESL 명령 제어, Redis 기반 세션 관리, IVR 상태머신, CDR 로깅 | 8080 (HTTP API) |
+| **Bridge** | WebSocket 오디오 수신, VAD 추론, gRPC AI 스트리밍, TTS 재생, OTel 텔레메트리 | 8090 (WS), 8091 (Internal) |
+| **Redis** | 분산 세션 상태 저장, 노드 간 명령 라우팅 (Pub/Sub) | 6379 |
 
 ### 데이터 흐름
 
@@ -279,6 +286,16 @@ curl -s -H "Authorization: Bearer YOUR_ADMIN_API_KEY" \
 | `AUDIO_FORK_SCHEME` | `ws` | 오디오 포크 프로토콜 (`ws` / `wss`) |
 | `RATE_LIMIT_RPS` | `20` | API 초당 요청 제한 |
 | `RATE_LIMIT_BURST` | `40` | API 버스트 허용량 |
+
+### Redis / JWT / OTel 설정 (상용 고도화)
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `REDIS_ADDR` | `127.0.0.1:6379` | Redis 주소 |
+| `REDIS_PASS` | (빈값) | Redis 비밀번호 |
+| `JWT_SECRET` | (필수) | JWT 서명용 비밀키 |
+| `OTEL_ENABLED` | `false` | OpenTelemetry 트레이싱 활성화 여부 |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTLP(Collector/Jaeger) 수집기 주소 |
 
 ### 세션 / 녹음 설정
 
@@ -679,6 +696,22 @@ echo $GRPC_STREAM_DEADLINE_SECS
 
 # 3. FreeSWITCH RTP 타임아웃 확인 (30초 무음시 종료)
 # config/freeswitch/sip_profiles/internal.xml의 rtp-timeout-sec 참조
+
+#### [Case 5] Redis 연결 실패 시 서비스 다운
+- **진단**: Redis가 죽었는데 오케스트레이터가 종료됨.
+- **해결**: 최신 버전은 **Auto-Fallback** 기능을 포함합니다. Redis 연결에 실패하면 `MemoryStore`로 자동 전환되어 단일 노드 운영이 가능합니다. 로그에서 `falling back to in-memory session store` 메시지를 확인하세요.
+
+#### [Case 6] ESL 데이터 누락 또는 "Short Read"
+- **진단**: 이벤트 본문이 중간에 잘리거나 파싱 에러 발생.
+- **해결**: ESL 클라이언트에 `io.ReadFull` 기반의 엄격한 길이 체크 로직이 적용되었습니다. 최신 코드로 업데이트하세요.
+
+#### [Case 7] CDR Webhook 호출 실패
+- **진단**: 외부 Webhook 서버 장애로 CDR 유실 우려.
+- **해결**: 호출 실패 시 `cdr_failed.jsonl` 파일에 로컬 백업을 생성하도록 고도화되었습니다. 나중에 해당 파일을 수동으로 재처리할 수 있습니다.
+
+#### [Case 8] 동시 통화 시 용량 제한 위반 (Race Condition)
+- **진단**: 세션 카운트가 실제보다 높거나 낮게 측정되어 MAX_SESSIONS 정책이 무너짐.
+- **해결**: Redis Lua Script를 이용한 **원자적 증감(Atomic INCR/DECR)** 로직으로 교체되었습니다. 멀티 노드 동기화 오차 없이 정확한 용량 제어가 가능합니다.
 ```
 
 #### DTMF 미작동
