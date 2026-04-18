@@ -21,36 +21,41 @@ import (
 type SessionState struct {
 	mu sync.RWMutex
 
+	// Node binding (which orchestrator instance owns this session locally)
+	NodeID string `json:"node_id"`
+
 	// IDs (immutable after creation — no lock needed for reads)
-	SessionID string
-	FSUUID    string
-	CallerID  string
-	DestNum   string
+	SessionID string `json:"session_id"`
+	FSUUID    string `json:"fs_uuid"`
+	CallerID  string `json:"caller_id"`
+	DestNum   string `json:"dest_num"`
 
 	// Timing
-	CreatedAt  time.Time
-	AnsweredAt time.Time
-	HangupAt   time.Time
+	CreatedAt  time.Time `json:"created_at"`
+	AnsweredAt time.Time `json:"answered_at"`
+	HangupAt   time.Time `json:"hangup_at"`
 
 	// Mutable state (must use accessors)
-	aiPaused    bool
-	recordPath  string
-	bridgedWith string
+	aiPaused    bool   `json:"-"`
+	AiPausedExport bool `json:"ai_paused"` // Exported for JSON Unmarshal only
 
-	// IVR event channel (set by onChannelPark, used by onDtmf)
-	// Typed as chan any to avoid circular dependency with ivr package.
-	// Actual type is chan ivr.IvrEvent.
-	IvrEventCh chan any
+	recordPath  string `json:"-"`
+	RecordPathExport string `json:"record_path"`
 
-	// Context for cancellation
-	Ctx    context.Context
-	Cancel context.CancelFunc
+	bridgedWith string `json:"-"`
+	BridgedWithExport string `json:"bridged_with"`
+
+	// Local context/channels (Not serialized to Redis)
+	IvrEventCh chan any             `json:"-"`
+	Ctx        context.Context      `json:"-"`
+	Cancel     context.CancelFunc   `json:"-"`
 }
 
 // NewSession creates a new SessionState with the given IDs.
-func NewSession(sessionID, fsUUID, callerID, destNum string) *SessionState {
+func NewSession(nodeID, sessionID, fsUUID, callerID, destNum string) *SessionState {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &SessionState{
+		NodeID:    nodeID,
 		SessionID: sessionID,
 		FSUUID:    fsUUID,
 		CallerID:  callerID,

@@ -48,6 +48,9 @@ type Server struct {
 	vadEngine       *vad.Engine
 	grpcClientPool  *grpcclient.Pool
 	bargeController *barge.Controller
+
+	// Buffer pool for audio chunks (standard 32ms/20ms sizes)
+	bufferPool sync.Pool
 }
 
 // NewServer creates a WS server with the given parent context.
@@ -57,6 +60,12 @@ func NewServer(ctx context.Context, vadEngine *vad.Engine, grpcPool *grpcclient.
 		vadEngine:       vadEngine,
 		grpcClientPool:  grpcPool,
 		bargeController: bargeCtrl,
+		bufferPool: sync.Pool{
+			New: func() any {
+				// Allocate 2KB to cover G.711/PCM16 frames comfortably
+				return make([]byte, 2048)
+			},
+		},
 	}
 }
 
@@ -78,7 +87,8 @@ func (s *Server) HandleAudio(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("WS connection established", "uuid", uuid)
 
-	sess := NewSession(s.ctx, uuid, conn, s.vadEngine, s.grpcClientPool, s.bargeController)
+	vadInst := s.vadEngine.NewInstance()
+	sess := NewSession(s.ctx, uuid, conn, vadInst, s.grpcClientPool, s.bargeController, &s.bufferPool)
 	s.sessions.Store(uuid, sess)
 
 	go func() {

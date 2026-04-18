@@ -23,11 +23,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// CallsHandler handles outbound call requests.
+// CallsHandler handles origination of outbound calls.
 type CallsHandler struct {
 	ESL          esl.Commander
-	Sessions     *session.Manager
-	UseStandbyGW bool // Q-03: true if PBX_STANDBY_HOST is configured
+	Sessions     session.Store
+	UseStandbyGW bool
+	NodeID       string
 }
 
 type createCallRequest struct {
@@ -57,8 +58,9 @@ func (h *CallsHandler) CreateCall(w http.ResponseWriter, r *http.Request) {
 
 	// Atomic capacity check + session creation
 	sessionID := uuid.New().String()
-	s := session.NewSession(sessionID, sessionID, "", req.TargetURI)
-	if !h.Sessions.AddIfUnderCapacity(s) {
+	s := session.NewSession(h.NodeID, sessionID, sessionID, "", req.TargetURI)
+	ctx := r.Context()
+	if !h.Sessions.AddIfUnderCapacity(ctx, s) {
 		metrics.ApiOutboundRejected.Inc()
 		s.Cancel()
 		http.Error(w, `{"error":"capacity exceeded"}`, http.StatusServiceUnavailable)
@@ -70,12 +72,12 @@ func (h *CallsHandler) CreateCall(w http.ResponseWriter, r *http.Request) {
 	// ESL originate (background API) — P-07: with Caller-ID, Q-03: conditional standby
 	_, err := h.ESL.Originate(sessionID, req.TargetURI, req.CallerID, h.UseStandbyGW)
 	if err != nil {
-		h.Sessions.Release(sessionID)
+		h.Sessions.Release(ctx, sessionID)
 		slog.Error("ESL originate failed", "err", err)
 		http.Error(w, `{"error":"originate failed"}`, http.StatusInternalServerError)
 		return
 	}
-	metrics.ActiveCalls.Set(float64(h.Sessions.Count()))
+	metrics.ActiveCalls.Set(float64(h.Sessions.Count(ctx)))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

@@ -28,6 +28,25 @@ services:
         max-size: "100m"
         max-file: "5"
 
+  redis:
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
   orchestrator:
     environment:
       - RUNTIME_PROFILE=production

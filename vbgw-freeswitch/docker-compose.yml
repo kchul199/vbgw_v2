@@ -62,6 +62,22 @@ services:
       retries: 5
       start_period: 30s
 
+  # ===== Tier 1.5: Redis Session Store =====
+  redis:
+    image: redis:7-alpine
+    container_name: vbgw-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - ./redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   # ===== Tier 2: Go Orchestrator =====
   orchestrator:
     build:
@@ -93,6 +109,7 @@ services:
       - RUNTIME_PROFILE=${RUNTIME_PROFILE:-dev}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - IVR_TRANSFER_TARGET=${IVR_TRANSFER_TARGET:-}
+      - REDIS_ADDR=${REDIS_ADDR:-127.0.0.1:6379}
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/live"]
       interval: 10s
@@ -100,6 +117,8 @@ services:
       retries: 3
     depends_on:
       freeswitch:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   # ===== Tier 3: WebSocket Bridge =====

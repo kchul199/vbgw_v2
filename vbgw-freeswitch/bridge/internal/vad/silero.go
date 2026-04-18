@@ -31,130 +31,111 @@ const (
 	sampleRate = 16000
 )
 
-// Engine wraps the Silero VAD ONNX model with onnxruntime-go.
+// Engine handles the shared ONNX model and environment.
 type Engine struct {
 	modelPath string
 	session   *ort.AdvancedSession
-	mu        sync.Mutex
-	buffer    []int16
-
-	// T-01: Input tensor (kept as field so infer() can update its data)
-	input *ort.Tensor[float32] // [1, vadWindowSamples]
-
-	// Silero VAD v4 state tensors (LSTM hidden states)
-	h  *ort.Tensor[float32] // [2, 1, 64]
-	c  *ort.Tensor[float32] // [2, 1, 64]
-	sr *ort.Tensor[int64]   // [1] = 16000
-
-	// Output tensor
-	output *ort.Tensor[float32] // [1, 1]
-	hn     *ort.Tensor[float32] // [2, 1, 64]
-	cn     *ort.Tensor[float32] // [2, 1, 64]
 }
 
-// NewEngine creates a VAD engine with ONNX Runtime.
+// Instance manages per-session VAD state (LSTM hidden states and buffers).
+type Instance struct {
+	engine *Engine
+	buffer []int16
+
+	// Per-session tensors for parallel inference
+	input  *ort.Tensor[float32]
+	h      *ort.Tensor[float32]
+	c      *ort.Tensor[float32]
+	sr     *ort.Tensor[int64]
+	output *ort.Tensor[float32]
+	hn     *ort.Tensor[float32]
+	cn     *ort.Tensor[float32]
+}
+
+// NewEngine creates a shared VAD engine.
 func NewEngine(modelPath string) *Engine {
-	e := &Engine{
-		modelPath: modelPath,
-		buffer:    make([]int16, 0, vadWindowSamples*2),
+	ort.SetSharedLibraryPath(getOrtLibPath())
+	if err := ort.InitializeEnvironment(); err != nil {
+		slog.Error("ONNX env init failed", "err", err)
+		return &Engine{modelPath: modelPath}
 	}
 
+	e := &Engine{modelPath: modelPath}
 	if err := e.loadModel(); err != nil {
-		slog.Error("ONNX VAD model load failed, falling back to energy-based",
-			"model_path", modelPath, "err", err)
-		return e
+		slog.Error("VAD model load failed", "path", modelPath, "err", err)
+	} else {
+		slog.Info("VAD engine initialized (Shared Model)", "path", modelPath)
 	}
-
-	slog.Info("VAD engine initialized (ONNX mode)", "model_path", modelPath)
 	return e
 }
 
 func (e *Engine) loadModel() error {
-	ort.SetSharedLibraryPath(getOrtLibPath())
-	if err := ort.InitializeEnvironment(); err != nil {
-		return fmt.Errorf("ONNX env init: %w", err)
-	}
-
-	// Silero VAD v4 input shapes
+	// Dummy tensors to initialize AdvancedSession (names only for now)
 	inputShape := ort.NewShape(1, vadWindowSamples)
 	srShape := ort.NewShape(1)
 	hShape := ort.NewShape(2, 1, 64)
-	cShape := ort.NewShape(2, 1, 64)
 	outputShape := ort.NewShape(1, 1)
 
-	// Create input tensors
-	e.input, err = ort.NewEmptyTensor[float32](inputShape)
-	if err != nil {
-		return fmt.Errorf("input tensor: %w", err)
+	options, err := ort.NewSessionOptions()
+	if err == nil {
+		options.SetIntraOpNumThreads(1)
+		options.SetInterOpNumThreads(1)
 	}
 
-	e.sr, err = ort.NewTensor(srShape, []int64{sampleRate})
-	if err != nil {
-		return fmt.Errorf("sr tensor: %w", err)
-	}
-
-	e.h, err = ort.NewEmptyTensor[float32](hShape)
-	if err != nil {
-		return fmt.Errorf("h tensor: %w", err)
-	}
-
-	e.c, err = ort.NewEmptyTensor[float32](cShape)
-	if err != nil {
-		return fmt.Errorf("c tensor: %w", err)
-	}
-
-	// Create output tensors
-	e.output, err = ort.NewEmptyTensor[float32](outputShape)
-	if err != nil {
-		return fmt.Errorf("output tensor: %w", err)
-	}
-
-	e.hn, err = ort.NewEmptyTensor[float32](hShape)
-	if err != nil {
-		return fmt.Errorf("hn tensor: %w", err)
-	}
-
-	e.cn, err = ort.NewEmptyTensor[float32](cShape)
-	if err != nil {
-		return fmt.Errorf("cn tensor: %w", err)
-	}
-
-	// Create session
-	// Silero VAD v4 inputs: input, sr, h, c
-	// Silero VAD v4 outputs: output, hn, cn
-	inputs := []ort.ArbitraryTensor{e.input, e.sr, e.h, e.c}
-	outputs := []ort.ArbitraryTensor{e.output, e.hn, e.cn}
-
+	// Create a dummy session to verify the model and get handle
 	e.session, err = ort.NewAdvancedSession(
 		e.modelPath,
 		[]string{"input", "sr", "h", "c"},
 		[]string{"output", "hn", "cn"},
-		inputs,
-		outputs,
-		nil,
+		nil, // inputs will be bound per Instance
+		nil, // outputs will be bound per Instance
+		options,
 	)
-	if err != nil {
-		return fmt.Errorf("ONNX session: %w", err)
-	}
-
-	return nil
+	return err
 }
 
-// Process takes raw PCM bytes (L16, 16kHz, mono) and returns speech detection result.
-func (e *Engine) Process(pcmBytes []byte) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+// NewInstance creates a per-session VAD instance.
+func (e *Engine) NewInstance() *Instance {
+	inst := &Instance{
+		engine: e,
+		buffer: make([]int16, 0, vadWindowSamples*2),
+	}
 
+	if e.session == nil {
+		return inst
+	}
+
+	// Allocate per-instance tensors
+	var err error
+	inst.input, err = ort.NewEmptyTensor[float32](ort.NewShape(1, vadWindowSamples))
+	inst.sr, err = ort.NewTensor(ort.NewShape(1), []int64{sampleRate})
+	inst.h, err = ort.NewEmptyTensor[float32](ort.NewShape(2, 1, 64))
+	inst.c, err = ort.NewEmptyTensor[float32](ort.NewShape(2, 1, 64))
+	inst.output, err = ort.NewEmptyTensor[float32](ort.NewShape(1, 1))
+	inst.hn, err = ort.NewEmptyTensor[float32](ort.NewShape(2, 1, 64))
+	inst.cn, err = ort.NewEmptyTensor[float32](ort.NewShape(2, 1, 64))
+
+	if err != nil {
+		slog.Error("Failed to allocate VAD instance tensors", "err", err)
+		return inst
+	}
+
+	return inst
+}
+
+// Process takes raw PCM bytes and returns speech detection result.
+// No global mutex: state is isolated within the Instance.
+func (inst *Instance) Process(pcmBytes []byte) bool {
 	samples := bytesToInt16(pcmBytes)
-	e.buffer = append(e.buffer, samples...)
+	inst.buffer = append(inst.buffer, samples...)
 
 	var isSpeaking bool
-	for len(e.buffer) >= vadWindowSamples {
-		window := e.buffer[:vadWindowSamples]
-		e.buffer = e.buffer[vadWindowSamples:]
+	for len(inst.buffer) >= vadWindowSamples {
+		window := inst.buffer[:vadWindowSamples]
+		inst.buffer = inst.buffer[vadWindowSamples:]
 
-		if e.session != nil {
-			isSpeaking = e.infer(window)
+		if inst.engine.session != nil {
+			isSpeaking = inst.infer(window)
 		} else {
 			isSpeaking = energyDetectFallback(window)
 		}
@@ -162,64 +143,51 @@ func (e *Engine) Process(pcmBytes []byte) bool {
 	return isSpeaking
 }
 
-// infer runs ONNX inference on a 512-sample window.
-// T-01: Writes normalized samples directly into the pre-allocated input tensor,
-// then runs inference. Reuses e.session — does NOT create a new session per call.
-func (e *Engine) infer(samples []int16) bool {
-	if e.session == nil || e.input == nil {
+func (inst *Instance) infer(samples []int16) bool {
+	if inst.engine.session == nil || inst.input == nil {
 		return energyDetectFallback(samples)
 	}
 
-	// T-01 FIX: Write normalized samples directly into the input tensor's backing data.
-	// Previously created a local []float32 that was never attached to the session.
-	inputSlice := e.input.GetData()
+	// Normalize and write to input tensor
+	inputSlice := inst.input.GetData()
 	for i, s := range samples {
 		inputSlice[i] = float32(s) / 32768.0
 	}
 
-	// Copy h/c state from previous hn/cn output (LSTM state propagation)
-	copy(e.h.GetData(), e.hn.GetData())
-	copy(e.c.GetData(), e.cn.GetData())
+	// Propagate hidden states
+	copy(inst.h.GetData(), inst.hn.GetData())
+	copy(inst.c.GetData(), inst.cn.GetData())
 
-	// Run inference using the pre-loaded session
-	if err := e.session.Run(); err != nil {
-		slog.Error("VAD inference run failed", "err", err)
+	// Run inference binding this instance's tensors
+	inputs := []ort.ArbitraryTensor{inst.input, inst.sr, inst.h, inst.c}
+	outputs := []ort.ArbitraryTensor{inst.output, inst.hn, inst.cn}
+
+	if err := inst.engine.session.RunCustom(nil, inputs, outputs); err != nil {
+		slog.Error("VAD inference failed", "err", err)
 		return energyDetectFallback(samples)
 	}
 
-	prob := e.output.GetData()[0]
+	prob := inst.output.GetData()[0]
 	return prob > vadThreshold
 }
 
-// Close releases ONNX resources.
+func (inst *Instance) Close() {
+	if inst.input != nil { inst.input.Destroy() }
+	if inst.h != nil { inst.h.Destroy() }
+	if inst.c != nil { inst.c.Destroy() }
+	if inst.sr != nil { inst.sr.Destroy() }
+	if inst.output != nil { inst.output.Destroy() }
+	if inst.hn != nil { inst.hn.Destroy() }
+	if inst.cn != nil { inst.cn.Destroy() }
+}
+
 func (e *Engine) Close() {
 	if e.session != nil {
 		e.session.Destroy()
 	}
-	if e.input != nil {
-		e.input.Destroy()
-	}
-	if e.h != nil {
-		e.h.Destroy()
-	}
-	if e.c != nil {
-		e.c.Destroy()
-	}
-	if e.sr != nil {
-		e.sr.Destroy()
-	}
-	if e.output != nil {
-		e.output.Destroy()
-	}
-	if e.hn != nil {
-		e.hn.Destroy()
-	}
-	if e.cn != nil {
-		e.cn.Destroy()
-	}
 	ort.DestroyEnvironment()
-	slog.Info("VAD engine closed (ONNX)")
 }
+
 
 // energyDetectFallback is used when ONNX load fails.
 func energyDetectFallback(samples []int16) bool {

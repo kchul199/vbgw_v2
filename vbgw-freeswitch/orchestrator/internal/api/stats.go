@@ -22,8 +22,8 @@ import (
 
 // StatsHandler handles call statistics requests.
 type StatsHandler struct {
-	ESL      esl.Commander
-	Sessions *session.Manager
+	ESL      *esl.Client
+	Sessions session.Store
 }
 
 type callStats struct {

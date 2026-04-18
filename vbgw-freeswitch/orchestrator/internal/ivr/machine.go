@@ -17,34 +17,6 @@ import (
 	"time"
 )
 
-// State represents the IVR FSM state.
-type State int
-
-const (
-	Idle       State = iota
-	Menu             // Main menu — waiting for DTMF
-	AiChat           // Connected to AI engine
-	Transfer         // Transferring to agent
-	Disconnect       // Call ending
-)
-
-func (s State) String() string {
-	switch s {
-	case Idle:
-		return "IDLE"
-	case Menu:
-		return "MENU"
-	case AiChat:
-		return "AI_CHAT"
-	case Transfer:
-		return "TRANSFER"
-	case Disconnect:
-		return "DISCONNECT"
-	default:
-		return "UNKNOWN"
-	}
-}
-
 // EventType identifies the IVR event kind.
 type EventType int
 
@@ -72,28 +44,55 @@ type Callbacks struct {
 // T-20: Default inactivity timeout (no DTMF activity in Menu state)
 const defaultInactivityTimeout = 5 * time.Minute
 
-// Machine is a channel-based IVR FSM. Single goroutine, no mutex needed.
+// Scenario defines the entire IVR flow.
+type Scenario struct {
+	ID           string              `json:"id"`
+	InitialState string              `json:"initial_state"`
+	Nodes        map[string]IvrNode `json:"nodes"`
+}
+
+// IvrNode defines a single state's behavior and transitions.
+type IvrNode struct {
+	Prompt     string            `json:"prompt,omitempty"`
+	OnDtmf     map[string]string `json:"on_dtmf,omitempty"` // digit -> next_state
+	OnTimeout  string            `json:"on_timeout,omitempty"`
+	TimeoutMs  int               `json:"timeout_ms,omitempty"`
+	Action     string            `json:"action,omitempty"` // e.g., "START_AI", "TRANSFER", "DISCONNECT"
+	Target     string            `json:"target,omitempty"` // for transfer
+}
+
+// Machine is a channel-based IVR FSM.
 type Machine struct {
 	sessionID string
-	state     State
+	state     string
+	scenario  *Scenario
 	EventCh   chan IvrEvent
 	cb        Callbacks
 }
 
-// NewMachine creates a new IVR machine.
-func NewMachine(sessionID string, cb Callbacks) *Machine {
+// NewMachine creates a new IVR machine with a dynamic scenario.
+func NewMachine(sessionID string, scenario *Scenario, cb Callbacks) *Machine {
+	if scenario == nil {
+		// Fallback to minimal default scenario
+		scenario = &Scenario{
+			InitialState: "IDLE",
+			Nodes: map[string]IvrNode{
+				"IDLE": {OnDtmf: map[string]string{}},
+			},
+		}
+	}
 	return &Machine{
 		sessionID: sessionID,
-		state:     Idle,
+		state:     scenario.InitialState,
+		scenario:  scenario,
 		EventCh:   make(chan IvrEvent, 16),
 		cb:        cb,
 	}
 }
 
 // Run processes events until context is cancelled. Must be called as a goroutine.
-// T-20: Added inactivity timeout — if no events for 5 minutes, auto-disconnect.
 func (m *Machine) Run(ctx context.Context) {
-	slog.Info("IVR machine started", "session", m.sessionID, "state", m.state.String())
+	slog.Info("IVR machine started", "session", m.sessionID, "state", m.state)
 	inactivityTimer := time.NewTimer(defaultInactivityTimeout)
 	defer inactivityTimer.Stop()
 
@@ -106,7 +105,7 @@ func (m *Machine) Run(ctx context.Context) {
 			m.handleEvent(evt)
 			inactivityTimer.Reset(defaultInactivityTimeout)
 		case <-inactivityTimer.C:
-			slog.Warn("IVR inactivity timeout", "session", m.sessionID, "state", m.state.String())
+			slog.Warn("IVR inactivity timeout", "session", m.sessionID, "state", m.state)
 			if m.cb.OnDisconnect != nil {
 				m.cb.OnDisconnect()
 			}
@@ -115,30 +114,22 @@ func (m *Machine) Run(ctx context.Context) {
 	}
 }
 
-// State returns the current FSM state.
-func (m *Machine) State() State {
+// State returns the current FSM state (as string for dynamic scenario).
+func (m *Machine) State() string {
 	return m.state
-}
-
-func (m *Machine) transition(newState State) {
-	slog.Info("IVR state transition",
-		"session", m.sessionID,
-		"from", m.state.String(),
-		"to", newState.String(),
-	)
-	m.state = newState
 }
 
 func (m *Machine) handleEvent(evt IvrEvent) {
 	switch evt.Type {
 	case ActivateMenuEvent:
-		m.transition(Menu)
+		// Transition to initial menu state
+		m.transition(m.scenario.InitialState)
 		if m.cb.OnRepeatMenu != nil {
 			m.cb.OnRepeatMenu()
 		}
 
 	case HangupEvent:
-		m.transition(Idle)
+		m.transition("IDLE")
 
 	case DtmfEvent:
 		m.handleDtmf(evt.Digit)
@@ -146,58 +137,64 @@ func (m *Machine) handleEvent(evt IvrEvent) {
 }
 
 func (m *Machine) handleDtmf(digit string) {
-	slog.Info("IVR DTMF received", "session", m.sessionID, "digit", digit, "state", m.state.String())
+	slog.Info("IVR DTMF received", "session", m.sessionID, "digit", digit, "state", m.state)
 
-	switch m.state {
-	case Menu:
-		switch digit {
-		case "1":
-			m.transition(AiChat)
-			if m.cb.OnEnterAiChat != nil {
-				m.cb.OnEnterAiChat()
-			}
-		case "0":
-			m.transition(Transfer)
-			if m.cb.OnTransfer != nil {
-				m.cb.OnTransfer()
-			}
-		case "#":
-			m.transition(Disconnect)
-			if m.cb.OnDisconnect != nil {
-				m.cb.OnDisconnect()
-			}
-		case "*":
-			if m.cb.OnRepeatMenu != nil {
-				m.cb.OnRepeatMenu()
-			}
-		default:
-			if m.cb.OnForwardDtmf != nil {
-				m.cb.OnForwardDtmf(digit)
-			}
-		}
+	node, ok := m.scenario.Nodes[m.state]
+	if !ok {
+		slog.Error("IVR: current state node not found", "session", m.sessionID, "state", m.state)
+		return
+	}
 
-	case AiChat:
-		switch digit {
-		case "0":
-			m.transition(Transfer)
-			if m.cb.OnTransfer != nil {
-				m.cb.OnTransfer()
-			}
-		case "*":
-			m.transition(Menu)
-			if m.cb.OnRepeatMenu != nil {
-				m.cb.OnRepeatMenu()
-			}
-		case "#":
-			m.transition(Disconnect)
-			if m.cb.OnDisconnect != nil {
-				m.cb.OnDisconnect()
-			}
-		default:
+	// 1. Check for state transition
+	nextState, found := node.OnDtmf[digit]
+	if !found {
+		// Fallback: forward to AI if in AI_CHAT node or as default behavior
+		if node.Action == "START_AI" {
 			slog.Info("IVR: forwarding DTMF to AI", "session", m.sessionID, "digit", digit)
 			if m.cb.OnForwardDtmf != nil {
 				m.cb.OnForwardDtmf(digit)
 			}
+		} else {
+			slog.Warn("IVR: unhandled DTMF digit", "session", m.sessionID, "digit", digit, "state", m.state)
+		}
+		return
+	}
+
+	// 2. Perform transition
+	m.transition(nextState)
+
+	// 3. Execute actions for the NEW state
+	newNode := m.scenario.Nodes[nextState]
+	m.executeAction(newNode)
+}
+
+func (m *Machine) transition(newState string) {
+	slog.Info("IVR state transition",
+		"session", m.sessionID,
+		"from", m.state,
+		"to", newState,
+	)
+	m.state = newState
+}
+
+func (m *Machine) executeAction(node IvrNode) {
+	switch node.Action {
+	case "START_AI":
+		if m.cb.OnEnterAiChat != nil {
+			m.cb.OnEnterAiChat()
+		}
+	case "TRANSFER":
+		if m.cb.OnTransfer != nil {
+			// In a real scenario, we'd pass node.Target here
+			m.cb.OnTransfer()
+		}
+	case "DISCONNECT":
+		if m.cb.OnDisconnect != nil {
+			m.cb.OnDisconnect()
+		}
+	case "REPEAT_MENU":
+		if m.cb.OnRepeatMenu != nil {
+			m.cb.OnRepeatMenu()
 		}
 	}
 }

@@ -27,20 +27,20 @@ type ESLChecker interface {
 
 // HealthHandler holds dependencies for health endpoints.
 type HealthHandler struct {
-	ESL        ESLChecker
-	Sessions   *session.Manager
+	ESL        esl.Commander
+	Sessions   session.Store
 	BridgeURL  string
 	StartTime  time.Time
 	httpClient *http.Client
 }
 
 // NewHealthHandler creates a HealthHandler.
-func NewHealthHandler(eslClient ESLChecker, sessions *session.Manager, bridgeURL string) *HealthHandler {
+func NewHealthHandler(eslClient esl.Commander, sessions session.Store, bridgeURL string) *HealthHandler {
 	return &HealthHandler{
-		ESL:       eslClient,
-		Sessions:  sessions,
-		BridgeURL: bridgeURL,
-		StartTime: time.Now(),
+		ESL:        eslClient,
+		Sessions:   sessions,
+		BridgeURL:  bridgeURL,
+		StartTime:  time.Now(),
 		httpClient: &http.Client{Timeout: 2 * time.Second},
 	}
 }
@@ -74,7 +74,7 @@ func (h *HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
 	resp := healthResponse{
 		Status:      "healthy",
 		Uptime:      time.Since(h.StartTime).Truncate(time.Second).String(),
-		ActiveCalls: h.Sessions.Count(),
+		ActiveCalls: h.Sessions.Count(r.Context()),
 	}
 
 	// Check ESL

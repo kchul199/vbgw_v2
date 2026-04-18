@@ -37,14 +37,21 @@ type Config struct {
 	RateLimitRPS   float64
 	RateLimitBurst int
 
-	// Session
+	// Session (Redis + Limits)
 	MaxSessions int64
+	RedisAddr   string
+	RedisPass   string
+	RedisDB     int
 
 	// Recording
 	RecordingEnable  bool
 	RecordingDir     string
 	RecordingMaxDays int
 	RecordingMaxMB   int64
+
+	// Webhooks
+	CDRWebhookURL    string
+	CDRWebhookSecret string
 
 	// Runtime
 	RuntimeProfile string
@@ -65,10 +72,15 @@ func Load() *Config {
 		RateLimitRPS:       envFloat("RATE_LIMIT_RPS", 20),
 		RateLimitBurst:     envInt("RATE_LIMIT_BURST", 40),
 		MaxSessions:        int64(envInt("MAX_SESSIONS", 100)),
+		RedisAddr:          envStr("REDIS_ADDR", "127.0.0.1:6379"),
+		RedisPass:          envStr("REDIS_PASS", ""),
+		RedisDB:            envInt("REDIS_DB", 0),
 		RecordingEnable:    envBool("RECORDING_ENABLE", false),
 		RecordingDir:       envStr("RECORDING_DIR", "/recordings"),
 		RecordingMaxDays:   envInt("RECORDING_MAX_DAYS", 30),
 		RecordingMaxMB:     int64(envInt("RECORDING_MAX_MB", 1024)),
+		CDRWebhookURL:      envStr("CDR_WEBHOOK_URL", ""),
+		CDRWebhookSecret:   envStr("CDR_WEBHOOK_SECRET", ""),
 		RuntimeProfile:     envStr("RUNTIME_PROFILE", "dev"),
 		LogLevel:           envStr("LOG_LEVEL", "info"),
 	}

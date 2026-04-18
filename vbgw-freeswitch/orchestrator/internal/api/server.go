@@ -27,7 +27,7 @@ import (
 )
 
 // NewRouter creates the HTTP router with all endpoints registered.
-func NewRouter(cfg *config.Config, eslClient *esl.Client, sessions *session.Manager) http.Handler {
+func NewRouter(cfg *config.Config, eslClient *esl.Client, sessions session.Store, nodeID string) http.Handler {
 	r := chi.NewRouter()
 
 	bridgeURL := "http://" + cfg.BridgeHost + ":" + itoa(cfg.BridgeInternalPort)
@@ -38,14 +38,18 @@ func NewRouter(cfg *config.Config, eslClient *esl.Client, sessions *session.Mana
 		ESL:          eslClient,
 		Sessions:     sessions,
 		UseStandbyGW: cfg.PBXStandbyHost != "",
+		NodeID:       nodeID,
 	}
 	controlHandler := &ControlHandler{
 		ESL:        eslClient,
 		Sessions:   sessions,
 		BridgeURL:  bridgeURL,
 		httpClient: httpClient,
+		NodeID:     nodeID,
 	}
 	statsHandler := &StatsHandler{ESL: eslClient, Sessions: sessions}
+	dialplanHandler := &DialplanHandler{}
+	adminHandler := NewAdminHandler(sessions)
 
 	// Public health endpoints (no auth — liveness/readiness probes)
 	r.Get("/live", healthHandler.Live)
@@ -60,6 +64,9 @@ func NewRouter(cfg *config.Config, eslClient *esl.Client, sessions *session.Mana
 
 		// T-27: /health behind auth (exposes internal component status)
 		r.Get("/health", healthHandler.Health)
+
+		// Admin Dashboard APIs
+		r.Get("/api/v1/admin/sessions/active", adminHandler.GetActiveSessions)
 
 		// Prometheus metrics (behind auth to prevent info leak)
 		r.Handle("/metrics", promhttp.Handler())
@@ -95,10 +102,13 @@ func NewRouter(cfg *config.Config, eslClient *esl.Client, sessions *session.Mana
 		r.Post("/api/v1/calls/unbridge", controlHandler.UnbridgeCalls)
 	})
 
-	// Internal endpoints (loopback only — Bridge → Orchestrator)
+	// Internal endpoints (loopback only — PBX/Bridge → Orchestrator)
 	r.Group(func(r chi.Router) {
 		r.Use(LoopbackOnlyMiddleware)
 		r.Post("/internal/barge-in/{uuid}", controlHandler.BargeIn)
+
+		// Dynamic Dialplan (mod_xml_curl)
+		r.Post("/api/v1/fs/dialplan", dialplanHandler.GenerateDialplan)
 	})
 
 	// Debug: pprof endpoints (non-production only, behind auth)

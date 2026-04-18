@@ -39,7 +39,10 @@ func main() {
 	cfg := config.Load()
 	setupLogging(cfg.LogLevel)
 
+	// Generate Node ID for distributed ownership
+	nodeID := uuid.New().String()
 	slog.Info("Orchestrator starting",
+		"node_id", nodeID,
 		"profile", cfg.RuntimeProfile,
 		"max_sessions", cfg.MaxSessions,
 		"http_port", cfg.HTTPPort,
@@ -53,15 +56,26 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize session manager
-	sessionMgr := session.NewManager(cfg.MaxSessions)
+	// Initialize Redis session manager
+	sessionMgr, err := session.NewRedisStore(cfg.RedisAddr, cfg.RedisPass, cfg.RedisDB, cfg.MaxSessions, nodeID)
+	if err != nil {
+		slog.Error("Redis connection failed", "err", err)
+		os.Exit(1)
+	}
 
 	// Connect ESL (eslClient used in handler closure, declared first)
 	var eslClient *esl.Client
 	eslHandler := func(evt *esl.Event) {
-		handleESLEvent(evt, sessionMgr, cfg, eslClient)
+		handleESLEvent(evt, sessionMgr, cfg, eslClient, nodeID)
 	}
 	eslClient = esl.NewClient(cfg.ESLHost, cfg.ESLPort, cfg.ESLPassword, eslHandler)
+
+	// Subscribe to internal Pub/Sub commands for distributed API routing
+	go sessionMgr.SubscribeCommands(ctx, func(msg session.CommandMsg) {
+		slog.Info("Received Pub/Sub command", "action", msg.Action, "session_id", msg.SessionID)
+		// API commands are routed to local node
+		api.HandleLocalCommand(ctx, msg, sessionMgr, eslClient)
+	})
 
 	// Register reconnect callback: reconcile orphan sessions after ESL reconnection
 	eslClient.SetOnReconnect(func() {
@@ -74,17 +88,17 @@ func main() {
 		}
 		// Release sessions that no longer exist in FreeSWITCH
 		orphanCount := 0
-		sessionMgr.ForEach(func(s *session.SessionState) {
+		sessionMgr.ForEachLocal(func(s *session.SessionState) {
 			if !activeUUIDs[s.FSUUID] {
 				slog.Warn("Releasing orphan session", "session_id", s.SessionID, "fs_uuid", s.FSUUID)
-				sessionMgr.Release(s.SessionID)
+				sessionMgr.Release(ctx, s.SessionID)
 				orphanCount++
 			}
 		})
 		if orphanCount > 0 {
 			slog.Info("Orphan session cleanup complete", "released", orphanCount)
 		}
-		metrics.ActiveCalls.Set(float64(sessionMgr.Count()))
+		metrics.ActiveCalls.Set(float64(sessionMgr.Count(ctx)))
 	})
 
 	if err := eslClient.ConnectWithRetry(ctx); err != nil {
@@ -181,10 +195,9 @@ func main() {
 	}()
 
 	// HTTP server
-	router := api.NewRouter(cfg, eslClient, sessionMgr)
 	httpServer := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.HTTPPort),
-		Handler: router,
+		Addr:    ":" + strconv.Itoa(cfg.HTTPPort),
+		Handler: api.NewRouter(cfg, eslClient, sessionMgr, nodeID),
 	}
 
 	go func() {
@@ -240,29 +253,30 @@ func main() {
 }
 
 // handleESLEvent dispatches incoming ESL events to the appropriate handler.
-func handleESLEvent(evt *esl.Event, sessionMgr *session.Manager, cfg *config.Config, eslClient *esl.Client) {
+func handleESLEvent(evt *esl.Event, sessionMgr session.Store, cfg *config.Config, eslClient *esl.Client, nodeID string) {
+	ctx := context.Background()
 	switch evt.Name() {
 	case "CHANNEL_CREATE":
-		onChannelCreate(evt, sessionMgr, eslClient)
+		onChannelCreate(ctx, evt, sessionMgr, eslClient, nodeID)
 
 	case "CHANNEL_ANSWER":
-		onChannelAnswer(evt, sessionMgr)
+		onChannelAnswer(ctx, evt, sessionMgr)
 
 	case "CHANNEL_PARK":
-		onChannelPark(evt, sessionMgr, eslClient, cfg)
+		onChannelPark(ctx, evt, sessionMgr, eslClient, cfg)
 
 	case "DTMF":
-		onDtmf(evt, sessionMgr)
+		onDtmf(ctx, evt, sessionMgr)
 
 	case "CHANNEL_HANGUP_COMPLETE":
-		onChannelHangup(evt, sessionMgr)
+		onChannelHangup(ctx, evt, sessionMgr, cfg)
 
 	// P-12: SIP Hold/Resume (Re-INVITE) → pause/resume AI streaming
 	case "CHANNEL_HOLD":
-		onChannelHold(evt, sessionMgr, cfg)
+		onChannelHold(ctx, evt, sessionMgr, cfg)
 
 	case "CHANNEL_UNHOLD":
-		onChannelUnhold(evt, sessionMgr, cfg)
+		onChannelUnhold(ctx, evt, sessionMgr, cfg)
 
 	case "CUSTOM":
 		switch evt.SubClass() {
@@ -276,19 +290,19 @@ func handleESLEvent(evt *esl.Event, sessionMgr *session.Manager, cfg *config.Con
 	}
 }
 
-func onChannelCreate(evt *esl.Event, sessionMgr *session.Manager, eslClient *esl.Client) {
+func onChannelCreate(ctx context.Context, evt *esl.Event, sessionMgr session.Store, eslClient *esl.Client, nodeID string) {
 	fsUUID := evt.UUID()
 	slog.Info("CHANNEL_CREATE", "fs_uuid", fsUUID, "caller_id", evt.CallerID())
 
 	// Check if this is our originated call (UUID already in sessions)
-	if _, exists := sessionMgr.GetByFSUUID(fsUUID); exists {
+	if _, exists := sessionMgr.GetByFSUUID(ctx, fsUUID); exists {
 		return
 	}
 
 	// Inbound call — atomic capacity check + session creation
 	sessionID := uuid.New().String()
-	s := session.NewSession(sessionID, fsUUID, evt.CallerID(), evt.DestNumber())
-	if !sessionMgr.AddIfUnderCapacity(s) {
+	s := session.NewSession(nodeID, sessionID, fsUUID, evt.CallerID(), evt.DestNumber())
+	if !sessionMgr.AddIfUnderCapacity(ctx, s) {
 		slog.Warn("Session capacity exceeded, rejecting inbound call", "fs_uuid", fsUUID)
 		s.Cancel()
 		// P-03: Actively kill the FS channel to send BYE to PBX (prevents zombie park)
@@ -302,8 +316,8 @@ func onChannelCreate(evt *esl.Event, sessionMgr *session.Manager, eslClient *esl
 	slog.Info("Session created", "session_id", sessionID, "fs_uuid", fsUUID)
 }
 
-func onChannelAnswer(evt *esl.Event, sessionMgr *session.Manager) {
-	s, ok := sessionMgr.GetByFSUUID(evt.UUID())
+func onChannelAnswer(ctx context.Context, evt *esl.Event, sessionMgr session.Store) {
+	s, ok := sessionMgr.GetByFSUUID(ctx, evt.UUID())
 	if !ok {
 		return
 	}
@@ -317,8 +331,8 @@ func onChannelAnswer(evt *esl.Event, sessionMgr *session.Manager) {
 	slog.Info("CHANNEL_ANSWER", "session_id", s.SessionID, "pdd_ms", int(pdd*1000))
 }
 
-func onChannelPark(evt *esl.Event, sessionMgr *session.Manager, eslClient *esl.Client, cfg *config.Config) {
-	s, ok := sessionMgr.GetByFSUUID(evt.UUID())
+func onChannelPark(ctx context.Context, evt *esl.Event, sessionMgr session.Store, eslClient *esl.Client, cfg *config.Config) {
+	s, ok := sessionMgr.GetByFSUUID(ctx, evt.UUID())
 	if !ok {
 		return
 	}
@@ -380,8 +394,8 @@ func onChannelPark(evt *esl.Event, sessionMgr *session.Manager, eslClient *esl.C
 	slog.Info("CHANNEL_PARK — IVR started", "session_id", s.SessionID)
 }
 
-func onDtmf(evt *esl.Event, sessionMgr *session.Manager) {
-	s, ok := sessionMgr.GetByFSUUID(evt.UUID())
+func onDtmf(ctx context.Context, evt *esl.Event, sessionMgr session.Store) {
+	s, ok := sessionMgr.GetByFSUUID(ctx, evt.UUID())
 	if !ok {
 		return
 	}
@@ -401,17 +415,25 @@ func onDtmf(evt *esl.Event, sessionMgr *session.Manager) {
 	}
 }
 
-func onChannelHangup(evt *esl.Event, sessionMgr *session.Manager) {
-	s, ok := sessionMgr.GetByFSUUID(evt.UUID())
+func onChannelHangup(ctx context.Context, evt *esl.Event, sessionMgr session.Store, cfg *config.Config) {
+	s, ok := sessionMgr.GetByFSUUID(ctx, evt.UUID())
 	if !ok {
 		return
 	}
 
 	hangupCause := evt.HangupCause()
 	sipCode := evt.SipTermStatus()
+	
+	s.SetHangupAt(time.Now())
+	
+	// A-03: Asynchronous CDR Webhook Delivery (Fire & Forget)
+	cdr.SendAsync(cfg, s, hangupCause)
+	
+	// Standard LogHangup
 	cdr.LogHangup(s, hangupCause)
-	sessionMgr.Release(s.SessionID)
-	metrics.ActiveCalls.Set(float64(sessionMgr.Count()))
+	
+	sessionMgr.Release(ctx, s.SessionID)
+	metrics.ActiveCalls.Set(float64(sessionMgr.Count(ctx)))
 
 	// S-01: SIP hangup cause + code breakdown metric
 	if sipCode == "" {
@@ -426,8 +448,8 @@ func onChannelHangup(evt *esl.Event, sessionMgr *session.Manager) {
 }
 
 // P-12: Pause AI streaming when PBX puts call on hold (Re-INVITE sendonly)
-func onChannelHold(evt *esl.Event, sessionMgr *session.Manager, cfg *config.Config) {
-	s, ok := sessionMgr.GetByFSUUID(evt.UUID())
+func onChannelHold(ctx context.Context, evt *esl.Event, sessionMgr session.Store, cfg *config.Config) {
+	s, ok := sessionMgr.GetByFSUUID(ctx, evt.UUID())
 	if !ok {
 		return
 	}
@@ -440,8 +462,8 @@ func onChannelHold(evt *esl.Event, sessionMgr *session.Manager, cfg *config.Conf
 }
 
 // P-12: Resume AI streaming when PBX takes call off hold
-func onChannelUnhold(evt *esl.Event, sessionMgr *session.Manager, cfg *config.Config) {
-	s, ok := sessionMgr.GetByFSUUID(evt.UUID())
+func onChannelUnhold(ctx context.Context, evt *esl.Event, sessionMgr session.Store, cfg *config.Config) {
+	s, ok := sessionMgr.GetByFSUUID(ctx, evt.UUID())
 	if !ok {
 		return
 	}

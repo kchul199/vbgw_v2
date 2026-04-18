@@ -35,9 +35,10 @@ type Session struct {
 	uuid string
 	conn *websocket.Conn
 
-	vadEngine       *vad.Engine
+	vadInstance     *vad.Instance
 	grpcPool        *grpcclient.Pool
 	bargeController *barge.Controller
+	bufferPool      *sync.Pool
 
 	pcmCh chan []byte // rx → vad+grpc
 	ttsCh chan []byte // ai-response → tx
@@ -54,17 +55,19 @@ func NewSession(
 	parentCtx context.Context,
 	uuid string,
 	conn *websocket.Conn,
-	vadEngine *vad.Engine,
+	vadInst *vad.Instance,
 	grpcPool *grpcclient.Pool,
 	bargeCtrl *barge.Controller,
+	pool *sync.Pool,
 ) *Session {
 	ctx, cancel := context.WithCancel(parentCtx)
 	return &Session{
 		uuid:            uuid,
 		conn:            conn,
-		vadEngine:       vadEngine,
+		vadInstance:     vadInst,
 		grpcPool:        grpcPool,
 		bargeController: bargeCtrl,
+		bufferPool:      pool,
 		pcmCh:           make(chan []byte, pcmChCap),
 		ttsCh:           make(chan []byte, ttsChCap),
 		ctx:             ctx,
@@ -76,6 +79,7 @@ func NewSession(
 func (s *Session) Run() {
 	defer s.cancel()
 	defer s.conn.Close()
+	defer s.vadInstance.Close() // Cleanup VAD instance tensors
 	defer close(s.pcmCh)
 	defer close(s.ttsCh)
 
@@ -139,8 +143,12 @@ func (s *Session) rxLoop() {
 		default:
 		}
 
+		// Borrow buffer from pool
+		buf := s.bufferPool.Get().([]byte)
+
 		_, data, err := s.conn.ReadMessage()
 		if err != nil {
+			s.bufferPool.Put(buf) // Return on error
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				slog.Info("WS closed normally", "uuid", s.uuid)
 			} else {
@@ -150,11 +158,16 @@ func (s *Session) rxLoop() {
 			return
 		}
 
+		// Copy data to pooled buffer (gorilla/websocket reuse buffers internally, so we MUST copy)
+		n := copy(buf, data)
+		pooledData := buf[:n]
+
 		// T-08: Non-blocking enqueue — drop new frame if full (atomic, no race)
 		select {
-		case s.pcmCh <- data:
+		case s.pcmCh <- pooledData:
 		default:
 			slog.Warn("PCM channel full, dropped incoming frame", "uuid", s.uuid)
+			s.bufferPool.Put(buf) // Return if dropped
 		}
 	}
 }
@@ -182,10 +195,15 @@ func (s *Session) vadGrpcLoop() {
 			}
 
 			// VAD inference
-			isSpeaking := s.vadEngine.Process(pcm)
+			isSpeaking := s.vadInstance.Process(pcm)
 
 			// Send to AI via gRPC
-			if err := stream.Send(s.uuid, pcm, isSpeaking); err != nil {
+			err := stream.Send(s.uuid, pcm, isSpeaking)
+			
+			// ALWAYS return buffer to pool after processing/sending
+			s.bufferPool.Put(pcm)
+
+			if err != nil {
 				slog.Error("gRPC send failed", "uuid", s.uuid, "err", err)
 				s.cancel()
 				return

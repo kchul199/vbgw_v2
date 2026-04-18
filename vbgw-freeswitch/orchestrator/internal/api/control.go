@@ -31,12 +31,12 @@ var (
 	sipTargetPattern = regexp.MustCompile(`^[a-zA-Z0-9@._:\-/]{1,256}$`)
 )
 
-// ControlHandler handles call control endpoints.
 type ControlHandler struct {
 	ESL        esl.Commander
-	Sessions   *session.Manager
+	Sessions   session.Store
 	BridgeURL  string
 	httpClient *http.Client
+	NodeID     string
 }
 
 type dtmfRequest struct {
@@ -59,7 +59,8 @@ type bridgeRequest struct {
 // SendDtmf handles POST /api/v1/calls/{id}/dtmf.
 func (h *ControlHandler) SendDtmf(w http.ResponseWriter, r *http.Request) {
 	callID := chi.URLParam(r, "id")
-	s, ok := h.Sessions.Get(callID)
+	ctx := r.Context()
+	s, ok := h.Sessions.Get(ctx, callID)
 	if !ok {
 		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
 		return
@@ -68,6 +69,16 @@ func (h *ControlHandler) SendDtmf(w http.ResponseWriter, r *http.Request) {
 	var req dtmfRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Digits == "" {
 		http.Error(w, `{"error":"digits required"}`, http.StatusBadRequest)
+		return
+	}
+
+	if s.NodeID != h.NodeID {
+		if err := h.Sessions.PublishCommand(ctx, s.NodeID, callID, "dtmf", req); err != nil {
+			http.Error(w, `{"error":"failed to route command"}`, http.StatusInternalServerError)
+		} else {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"status":"sent_via_pubsub"}`)
+		}
 		return
 	}
 	if !dtmfPattern.MatchString(req.Digits) {
@@ -88,7 +99,8 @@ func (h *ControlHandler) SendDtmf(w http.ResponseWriter, r *http.Request) {
 // Transfer handles POST /api/v1/calls/{id}/transfer.
 func (h *ControlHandler) Transfer(w http.ResponseWriter, r *http.Request) {
 	callID := chi.URLParam(r, "id")
-	s, ok := h.Sessions.Get(callID)
+	ctx := r.Context()
+	s, ok := h.Sessions.Get(ctx, callID)
 	if !ok {
 		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
 		return
@@ -101,6 +113,16 @@ func (h *ControlHandler) Transfer(w http.ResponseWriter, r *http.Request) {
 	}
 	if !sipTargetPattern.MatchString(req.Target) {
 		http.Error(w, `{"error":"invalid target format"}`, http.StatusBadRequest)
+		return
+	}
+
+	if s.NodeID != h.NodeID {
+		if err := h.Sessions.PublishCommand(ctx, s.NodeID, callID, "transfer", req); err != nil {
+			http.Error(w, `{"error":"failed to route command"}`, http.StatusInternalServerError)
+		} else {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"status":"transferred_via_pubsub"}`)
+		}
 		return
 	}
 
@@ -127,9 +149,21 @@ func (h *ControlHandler) Transfer(w http.ResponseWriter, r *http.Request) {
 // RecordStart handles POST /api/v1/calls/{id}/record/start.
 func (h *ControlHandler) RecordStart(w http.ResponseWriter, r *http.Request) {
 	callID := chi.URLParam(r, "id")
-	s, ok := h.Sessions.Get(callID)
+	ctx := r.Context()
+	s, ok := h.Sessions.Get(ctx, callID)
 	if !ok {
 		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+		return
+	}
+
+	if s.NodeID != h.NodeID {
+		req := recordRequest{Path: "start"}
+		if err := h.Sessions.PublishCommand(ctx, s.NodeID, callID, "record_start", req); err != nil {
+			http.Error(w, `{"error":"failed to route command"}`, http.StatusInternalServerError)
+		} else {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"status":"recording_via_pubsub"}`)
+		}
 		return
 	}
 
@@ -148,7 +182,8 @@ func (h *ControlHandler) RecordStart(w http.ResponseWriter, r *http.Request) {
 // RecordStop handles POST /api/v1/calls/{id}/record/stop.
 func (h *ControlHandler) RecordStop(w http.ResponseWriter, r *http.Request) {
 	callID := chi.URLParam(r, "id")
-	s, ok := h.Sessions.Get(callID)
+	ctx := r.Context()
+	s, ok := h.Sessions.Get(ctx, callID)
 	if !ok {
 		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
 		return
@@ -173,8 +208,9 @@ func (h *ControlHandler) BridgeCalls(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sA, okA := h.Sessions.Get(req.CallID1)
-	sB, okB := h.Sessions.Get(req.CallID2)
+	ctx := r.Context()
+	sA, okA := h.Sessions.Get(ctx, req.CallID1)
+	sB, okB := h.Sessions.Get(ctx, req.CallID2)
 	if !okA || !okB {
 		http.Error(w, `{"error":"one or both sessions not found"}`, http.StatusNotFound)
 		return
@@ -207,8 +243,9 @@ func (h *ControlHandler) UnbridgeCalls(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sA, okA := h.Sessions.Get(req.CallID1)
-	sB, okB := h.Sessions.Get(req.CallID2)
+	ctx := r.Context()
+	sA, okA := h.Sessions.Get(ctx, req.CallID1)
+	sB, okB := h.Sessions.Get(ctx, req.CallID2)
 	if !okA || !okB {
 		http.Error(w, `{"error":"one or both sessions not found"}`, http.StatusNotFound)
 		return
@@ -250,7 +287,8 @@ func (h *ControlHandler) BargeIn(w http.ResponseWriter, r *http.Request) {
 // FS-2: Eavesdrop handles POST /api/v1/calls/{id}/eavesdrop — supervisor monitoring.
 func (h *ControlHandler) Eavesdrop(w http.ResponseWriter, r *http.Request) {
 	callID := chi.URLParam(r, "id")
-	s, ok := h.Sessions.Get(callID)
+	ctx := r.Context()
+	s, ok := h.Sessions.Get(ctx, callID)
 	if !ok {
 		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
 		return
@@ -278,7 +316,8 @@ func (h *ControlHandler) Eavesdrop(w http.ResponseWriter, r *http.Request) {
 // FS-3: AttendedTransfer handles POST /api/v1/calls/{id}/attended-transfer.
 func (h *ControlHandler) AttendedTransfer(w http.ResponseWriter, r *http.Request) {
 	callID := chi.URLParam(r, "id")
-	s, ok := h.Sessions.Get(callID)
+	ctx := r.Context()
+	s, ok := h.Sessions.Get(ctx, callID)
 	if !ok {
 		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
 		return
@@ -314,4 +353,36 @@ func (h *ControlHandler) notifyBridge(action, uuid string) {
 		return
 	}
 	resp.Body.Close()
+}
+
+// HandleLocalCommand executes a command received via Pub/Sub on the local node where the session resides.
+func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr session.Store, eslClient *esl.Client) {
+	s, ok := sessionMgr.Get(ctx, msg.SessionID)
+	if !ok {
+		slog.Warn("Local command route failed: session not found", "session_id", msg.SessionID)
+		return
+	}
+
+	switch msg.Action {
+	case "dtmf":
+		var req dtmfRequest
+		json.Unmarshal(msg.Payload, &req)
+		eslClient.SendDtmf(s.FSUUID, req.Digits)
+	case "transfer":
+		var req transferRequest
+		json.Unmarshal(msg.Payload, &req)
+		eslClient.Transfer(s.FSUUID, req.Target)
+		if s.IvrEventCh != nil {
+			select {
+			case <-s.Ctx.Done():
+			case s.IvrEventCh <- ivr.IvrEvent{Type: ivr.HangupEvent}:
+			default:
+			}
+		}
+	case "record_start":
+		path := fmt.Sprintf("/recordings/%s.wav", s.SessionID)
+		eslClient.RecordStart(s.FSUUID, path)
+		s.SetRecordPath(path)
+		// save to redis...
+	}
 }
