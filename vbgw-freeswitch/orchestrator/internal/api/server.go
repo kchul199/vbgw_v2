@@ -58,9 +58,10 @@ func NewRouter(cfg *config.Config, eslClient *esl.Client, sessions session.Store
 
 	// Protected: metrics + API endpoints (require auth)
 	r.Group(func(r chi.Router) {
+		r.Use(TracingMiddleware)
 		r.Use(MetricsMiddleware)
 		r.Use(RateLimitMiddleware(cfg.RateLimitRPS, cfg.RateLimitBurst))
-		r.Use(AuthMiddleware(cfg.AdminAPIKey))
+		r.Use(JWTAuthMiddleware(cfg.JWTSecret, cfg.AdminAPIKey))
 
 		// T-27: /health behind auth (exposes internal component status)
 		r.Get("/health", healthHandler.Health)

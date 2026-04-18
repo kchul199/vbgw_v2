@@ -12,6 +12,7 @@
 package esl
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -20,7 +21,7 @@ import (
 // P-07: callerID parameter for CID display (Korean telecom law).
 // P-08: Returns bgapi Job-UUID; use CHANNEL_HANGUP event for SIP response code.
 // P-11/Q-03: Tries pbx-main first, falls back to pbx-standby if configured.
-func (c *Client) Originate(uuid, target, callerID string, useStandby bool) (string, error) {
+func (c *Client) Originate(ctx context.Context, uuid, target, callerID string, useStandby bool) (string, error) {
 	cidParam := ""
 	if callerID != "" {
 		cidParam = fmt.Sprintf(",origination_caller_id_number=%s,origination_caller_id_name=%s",
@@ -37,60 +38,60 @@ func (c *Client) Originate(uuid, target, callerID string, useStandby bool) (stri
 		"originate {origination_uuid=%s%s,failure_causes=NORMAL_TEMPORARY_FAILURE,originate_timeout=30}%s &park()",
 		uuid, cidParam, gateway,
 	)
-	return c.SendBgAPI(cmd)
+	return c.SendBgAPI(ctx, cmd)
 }
 
 // SendDtmf sends DTMF digits to a channel.
-func (c *Client) SendDtmf(uuid, digits string) error {
-	_, err := c.SendAPI(fmt.Sprintf("uuid_send_dtmf %s %s", uuid, digits))
+func (c *Client) SendDtmf(ctx context.Context, uuid, digits string) error {
+	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_send_dtmf %s %s", uuid, digits))
 	return err
 }
 
 // Transfer performs a blind transfer.
-func (c *Client) Transfer(uuid, target string) error {
-	_, err := c.SendAPI(fmt.Sprintf("uuid_transfer %s %s XML default", uuid, target))
+func (c *Client) Transfer(ctx context.Context, uuid, target string) error {
+	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_transfer %s %s XML default", uuid, target))
 	return err
 }
 
 // Bridge bridges two channels (1:1).
-func (c *Client) Bridge(uuidA, uuidB string) error {
-	_, err := c.SendAPI(fmt.Sprintf("uuid_bridge %s %s", uuidA, uuidB))
+func (c *Client) Bridge(ctx context.Context, uuidA, uuidB string) error {
+	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_bridge %s %s", uuidA, uuidB))
 	return err
 }
 
 // Unbridge parks a channel to detach from bridge.
-func (c *Client) Unbridge(uuid string) error {
-	_, err := c.SendAPI(fmt.Sprintf("uuid_transfer %s -both park", uuid))
+func (c *Client) Unbridge(ctx context.Context, uuid string) error {
+	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_transfer %s -both park", uuid))
 	return err
 }
 
 // RecordStart begins recording a channel.
-func (c *Client) RecordStart(uuid, path string) error {
-	_, err := c.SendAPI(fmt.Sprintf("uuid_record %s start %s", uuid, path))
+func (c *Client) RecordStart(ctx context.Context, uuid, path string) error {
+	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_record %s start %s", uuid, path))
 	return err
 }
 
 // RecordStop stops recording a channel.
-func (c *Client) RecordStop(uuid string) error {
-	_, err := c.SendAPI(fmt.Sprintf("uuid_record %s stop", uuid))
+func (c *Client) RecordStop(ctx context.Context, uuid string) error {
+	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_record %s stop", uuid))
 	return err
 }
 
 // Break interrupts the current playback on a channel (barge-in).
-func (c *Client) Break(uuid string) error {
-	_, err := c.SendAPI(fmt.Sprintf("uuid_break %s all", uuid))
+func (c *Client) Break(ctx context.Context, uuid string) error {
+	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_break %s all", uuid))
 	return err
 }
 
 // Kill terminates a channel.
-func (c *Client) Kill(uuid string) error {
-	_, err := c.SendAPI(fmt.Sprintf("uuid_kill %s", uuid))
+func (c *Client) Kill(ctx context.Context, uuid string) error {
+	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_kill %s", uuid))
 	return err
 }
 
 // Dump returns all channel variables as key=value pairs.
-func (c *Client) Dump(uuid string) (map[string]string, error) {
-	resp, err := c.SendAPI(fmt.Sprintf("uuid_dump %s", uuid))
+func (c *Client) Dump(ctx context.Context, uuid string) (map[string]string, error) {
+	resp, err := c.SendAPI(ctx, fmt.Sprintf("uuid_dump %s", uuid))
 	if err != nil {
 		return nil, err
 	}
@@ -111,41 +112,37 @@ func (c *Client) Dump(uuid string) (map[string]string, error) {
 }
 
 // Pause sends fsctl pause to stop accepting new calls.
-func (c *Client) Pause() error {
-	_, err := c.SendAPI("fsctl pause")
+func (c *Client) Pause(ctx context.Context) error {
+	_, err := c.SendAPI(ctx, "fsctl pause")
 	return err
 }
 
 // Resume sends fsctl resume to accept new calls again.
-// Q-09: Called on Orchestrator startup to ensure FS is not stuck in paused state
-// (e.g., after Orchestrator-only restart while FS kept running).
-func (c *Client) Resume() error {
-	_, err := c.SendAPI("fsctl resume")
+func (c *Client) Resume(ctx context.Context) error {
+	_, err := c.SendAPI(ctx, "fsctl resume")
 	return err
 }
 
 // Hupall hangs up all active calls.
-func (c *Client) Hupall() error {
-	_, err := c.SendAPI("hupall")
+func (c *Client) Hupall(ctx context.Context) error {
+	_, err := c.SendAPI(ctx, "hupall")
 	return err
 }
 
-// FS-2: Eavesdrop allows a supervisor to listen to a call.
-// mode: "r" (listen only), "w" (whisper to agent), "rw" (full duplex).
-func (c *Client) Eavesdrop(supervisorUUID, targetUUID string) error {
-	_, err := c.SendAPI(fmt.Sprintf("uuid_transfer %s 'eavesdrop::%s' inline", supervisorUUID, targetUUID))
+// Eavesdrop allows a supervisor to listen to a call.
+func (c *Client) Eavesdrop(ctx context.Context, supervisorUUID, targetUUID string) error {
+	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_transfer %s 'eavesdrop::%s' inline", supervisorUUID, targetUUID))
 	return err
 }
 
-// FS-2: ConferenceKick removes a participant from a conference.
-func (c *Client) ConferenceKick(confName, memberID string) error {
-	_, err := c.SendAPI(fmt.Sprintf("conference %s kick %s", confName, memberID))
+// ConferenceKick removes a participant from a conference.
+func (c *Client) ConferenceKick(ctx context.Context, confName, memberID string) error {
+	_, err := c.SendAPI(ctx, fmt.Sprintf("conference %s kick %s", confName, memberID))
 	return err
 }
 
-// FS-3: AttendedTransfer performs a two-step attended (consultative) transfer.
-// Step 1: Bridge supervisor to target, Step 2: Transfer original call.
-func (c *Client) AttendedTransfer(uuid, target string) error {
-	_, err := c.SendAPI(fmt.Sprintf("uuid_transfer %s 'att_xfer::{origination_caller_id_name=Transfer}sofia/gateway/pbx-main/%s' inline", uuid, target))
+// AttendedTransfer performs a two-step attended (consultative) transfer.
+func (c *Client) AttendedTransfer(ctx context.Context, uuid, target string) error {
+	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_transfer %s 'att_xfer::{origination_caller_id_name=Transfer}sofia/gateway/pbx-main/%s' inline", uuid, target))
 	return err
 }

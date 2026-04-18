@@ -9,29 +9,31 @@
  * ─────────────────────────────────────────
  */
 
-package esl
+import (
+	"context"
+)
 
-// Commander abstracts ESL commands for testability.
+// Commander abstracts ESL commands for testability and tracing.
 // *Client satisfies this interface.
 type Commander interface {
-	Originate(uuid, target, callerID string, useStandby bool) (string, error)
-	SendDtmf(uuid, digits string) error
-	Transfer(uuid, target string) error
-	Bridge(uuidA, uuidB string) error
-	Unbridge(uuid string) error
-	RecordStart(uuid, path string) error
-	RecordStop(uuid string) error
-	Break(uuid string) error
-	Kill(uuid string) error
-	Dump(uuid string) (map[string]string, error)
-	Pause() error
-	Resume() error
+	Originate(ctx context.Context, uuid, target, callerID string, useStandby bool) (string, error)
+	SendDtmf(ctx context.Context, uuid, digits string) error
+	Transfer(ctx context.Context, uuid, target string) error
+	Bridge(ctx context.Context, uuidA, uuidB string) error
+	Unbridge(ctx context.Context, uuid string) error
+	RecordStart(ctx context.Context, uuid, path string) error
+	RecordStop(ctx context.Context, uuid string) error
+	Break(ctx context.Context, uuid string) error
+	Kill(ctx context.Context, uuid string) error
+	Dump(ctx context.Context, uuid string) (map[string]string, error)
+	Pause(ctx context.Context) error
+	Resume(ctx context.Context) error
 	IsConnected() bool
 	// FS-2: Supervisor monitoring
-	Eavesdrop(supervisorUUID, targetUUID string) error
-	ConferenceKick(confName, memberID string) error
+	Eavesdrop(ctx context.Context, supervisorUUID, targetUUID string) error
+	ConferenceKick(ctx context.Context, confName, memberID string) error
 	// FS-3: Attended (consultative) transfer
-	AttendedTransfer(uuid, target string) error
+	AttendedTransfer(ctx context.Context, uuid, target string) error
 }
 
 // Verify *Client implements Commander at compile time.

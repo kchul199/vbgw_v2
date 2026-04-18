@@ -21,8 +21,16 @@ import (
 
 	"vbgw-orchestrator/internal/metrics"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/time/rate"
 )
+
+var tracer = otel.Tracer("vbgw-api")
 
 // AuthMiddleware validates the X-Admin-Key header using constant-time comparison.
 func AuthMiddleware(expectedKey string) func(http.Handler) http.Handler {
@@ -127,6 +135,37 @@ func LoopbackOnlyMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// TracingMiddleware injects OpenTelemetry span into the request context.
+func TracingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		
+		spanName := fmt.Sprintf("%s %s", r.Method, r.URL.Path)
+		ctx, span := tracer.Start(ctx, spanName,
+			trace.WithAttributes(
+				semconv.HTTPMethod(r.Method),
+				semconv.HTTPTarget(r.URL.Path),
+				semconv.HTTPURL(r.URL.String()),
+				semconv.HTTPUserAgent(r.UserAgent()),
+				attribute.String("http.remote_addr", r.RemoteAddr),
+			),
+			trace.WithSpanKind(trace.SpanKindServer),
+		)
+		defer span.End()
+
+		// Update request with new context
+		r = r.WithContext(ctx)
+
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(rw, r)
+
+		span.SetAttributes(semconv.HTTPStatusCode(rw.statusCode))
+		if rw.statusCode >= 400 {
+			span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", rw.statusCode))
+		}
 	})
 }
 

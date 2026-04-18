@@ -26,39 +26,44 @@ type mockESL struct {
 	lastDtmfDigits      string
 }
 
-func (m *mockESL) Originate(sessionID, target, callerID string, useStandby bool) (string, error) {
+func (m *mockESL) Originate(ctx context.Context, sessionID, target, callerID string, useStandby bool) (string, error) {
 	m.originateCalled++
 	return "+OK " + sessionID, nil
 }
-func (m *mockESL) SendDtmf(uuid, digits string) error {
+func (m *mockESL) SendDtmf(ctx context.Context, uuid, digits string) error {
 	m.sendDtmfCalled++
 	m.lastDtmfDigits = digits
 	return nil
 }
-func (m *mockESL) Transfer(uuid, target string) error {
+func (m *mockESL) Transfer(ctx context.Context, uuid, target string) error {
 	m.transferCalled++
 	m.lastTransferTarget = target
 	return nil
 }
-func (m *mockESL) RecordStart(uuid, path string) error {
+func (m *mockESL) RecordStart(ctx context.Context, uuid, path string) error {
 	m.recordStartCalled++
 	return nil
 }
-func (m *mockESL) RecordStop(uuid string) error {
+func (m *mockESL) RecordStop(ctx context.Context, uuid string) error {
 	m.recordStopCalled++
 	return nil
 }
-func (m *mockESL) Bridge(uuid1, uuid2 string) error   { return nil }
-func (m *mockESL) Unbridge(uuid string) error          { return nil }
-func (m *mockESL) Kill(uuid string) error               { return nil }
-func (m *mockESL) Break(uuid string) error {
+func (m *mockESL) Bridge(ctx context.Context, uuid1, uuid2 string) error   { return nil }
+func (m *mockESL) Unbridge(ctx context.Context, uuid string) error          { return nil }
+func (m *mockESL) Kill(ctx context.Context, uuid string) error               { return nil }
+func (m *mockESL) Break(ctx context.Context, uuid string) error {
 	m.breakCalled++
 	return nil
 }
-func (m *mockESL) Pause() error                        { return nil }
-func (m *mockESL) Eavesdrop(superUUID, targetUUID string) error { return nil }
-func (m *mockESL) AttendedTransfer(uuid, target string) error   { return nil }
-func (m *mockESL) SendAPI(cmd string) (string, error)           { return "+OK", nil }
+func (m *mockESL) Dump(ctx context.Context, uuid string) (map[string]string, error) { return nil, nil }
+func (m *mockESL) Pause(ctx context.Context) error                        { return nil }
+func (m *mockESL) Resume(ctx context.Context) error                       { return nil }
+func (m *mockESL) IsConnected() bool                                      { return true }
+func (m *mockESL) Eavesdrop(ctx context.Context, superUUID, targetUUID string) error { return nil }
+func (m *mockESL) ConferenceKick(ctx context.Context, confName, memberID string) error { return nil }
+func (m *mockESL) AttendedTransfer(ctx context.Context, uuid, target string) error   { return nil }
+func (m *mockESL) SendAPI(ctx context.Context, cmd string) (string, error)           { return "+OK", nil }
+func (m *mockESL) SendBgAPI(ctx context.Context, cmd string) (string, error)        { return "+OK", nil }
 
 // TestE2E_FullCallLifecycle exercises the complete call lifecycle:
 // Create → DTMF → RecordStart → RecordStop → Transfer → Verify session cleanup.

@@ -30,6 +30,7 @@ import (
 	"vbgw-orchestrator/internal/metrics"
 	"vbgw-orchestrator/internal/recording"
 	"vbgw-orchestrator/internal/session"
+	"vbgw-orchestrator/internal/telemetry"
 
 	"github.com/google/uuid"
 )
@@ -55,6 +56,15 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Initialize OpenTelemetry
+	shutdownOTel, err := telemetry.InitOTel(ctx, cfg, nodeID)
+	if err != nil {
+		slog.Error("Failed to initialize OpenTelemetry", "err", err)
+		// Don't exit, just continue without OTel
+	} else {
+		defer shutdownOTel(ctx)
+	}
 
 	// Initialize session manager (Redis primary, Memory fallback)
 	// C-3 FIX: Redis 연결 실패 시 MemoryStore로 자동 폴백하여 게이트웨이 가용성 유지
@@ -114,7 +124,7 @@ func main() {
 	metrics.ESLConnected.Set(1)
 
 	// Q-09: Ensure FS is not stuck in paused state from previous Orchestrator shutdown
-	if err := eslClient.Resume(); err != nil {
+	if err := eslClient.Resume(ctx); err != nil {
 		slog.Warn("fsctl resume failed (may be normal on fresh start)", "err", err)
 	}
 
@@ -146,7 +156,7 @@ func main() {
 					sofiaCtx, sofiaCancel := context.WithTimeout(ctx, 5*time.Second)
 					resultCh := make(chan string, 1)
 					go func() {
-						resp, err := eslClient.SendAPI("sofia status gateway pbx-main")
+						resp, err := eslClient.SendAPI(sofiaCtx, "sofia status gateway pbx-main")
 						if err != nil {
 							resultCh <- ""
 							return
@@ -236,7 +246,7 @@ func main() {
 	}
 
 	slog.Info("[Shutdown 2/5] ESL: fsctl pause sent")
-	eslClient.Pause()
+	eslClient.Pause(context.Background())
 
 	remaining := sessionMgr.Count()
 	slog.Info("[Shutdown 3/5] Draining active sessions", "count", remaining, "timeout", "30s")
@@ -245,7 +255,7 @@ func main() {
 	// P-04: Kill FS channels on drain timeout to send BYE to PBX
 	sessionMgr.WaitAllDrained(drainCtx, func(fsUUID string) {
 		slog.Info("Killing channel during shutdown", "fs_uuid", fsUUID)
-		eslClient.Kill(fsUUID)
+		eslClient.Kill(drainCtx, fsUUID)
 	})
 
 	slog.Info("[Shutdown 4/5] Bridge gRPC streams closed")
@@ -312,7 +322,7 @@ func onChannelCreate(ctx context.Context, evt *esl.Event, sessionMgr session.Sto
 		slog.Warn("Session capacity exceeded, rejecting inbound call", "fs_uuid", fsUUID)
 		s.Cancel()
 		// P-03: Actively kill the FS channel to send BYE to PBX (prevents zombie park)
-		if err := eslClient.Kill(fsUUID); err != nil {
+		if err := eslClient.Kill(ctx, fsUUID); err != nil {
 			slog.Error("Failed to kill over-capacity channel", "fs_uuid", fsUUID, "err", err)
 		}
 		return
@@ -349,9 +359,8 @@ func onChannelPark(ctx context.Context, evt *esl.Event, sessionMgr session.Store
 		OnEnterAiChat: func() { slog.Info("IVR: entering AI chat", "session", s.SessionID) },
 		OnTransfer: func() {
 			slog.Info("IVR: transfer requested", "session", s.SessionID)
-			// R-07: 실제 상담원 전환 실행
 			if cfg.IVRTransferTarget != "" {
-				if err := eslClient.Transfer(s.FSUUID, cfg.IVRTransferTarget); err != nil {
+				if err := eslClient.Transfer(s.Ctx, s.FSUUID, cfg.IVRTransferTarget); err != nil {
 					slog.Error("IVR transfer failed", "session", s.SessionID, "target", cfg.IVRTransferTarget, "err", err)
 				} else {
 					slog.Info("IVR: transferred to agent", "session", s.SessionID, "target", cfg.IVRTransferTarget)
@@ -362,7 +371,7 @@ func onChannelPark(ctx context.Context, evt *esl.Event, sessionMgr session.Store
 		},
 		OnDisconnect: func() {
 			slog.Info("IVR: disconnect requested", "session", s.SessionID)
-			eslClient.Kill(s.FSUUID)
+			eslClient.Kill(s.Ctx, s.FSUUID)
 		},
 		OnForwardDtmf: func(digit string) {
 			slog.Info("IVR: DTMF forwarded to AI", "session", s.SessionID, "digit", digit)

@@ -86,7 +86,7 @@ func (h *ControlHandler) SendDtmf(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.ESL.SendDtmf(s.FSUUID, req.Digits); err != nil {
+	if err := h.ESL.SendDtmf(ctx, s.FSUUID, req.Digits); err != nil {
 		slog.Error("SendDtmf failed", "err", err)
 		http.Error(w, `{"error":"dtmf send failed"}`, http.StatusInternalServerError)
 		return
@@ -126,7 +126,7 @@ func (h *ControlHandler) Transfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.ESL.Transfer(s.FSUUID, req.Target); err != nil {
+	if err := h.ESL.Transfer(ctx, s.FSUUID, req.Target); err != nil {
 		slog.Error("Transfer failed", "err", err)
 		http.Error(w, `{"error":"transfer failed"}`, http.StatusInternalServerError)
 		return
@@ -168,7 +168,7 @@ func (h *ControlHandler) RecordStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := fmt.Sprintf("/recordings/%s.wav", callID)
-	if err := h.ESL.RecordStart(s.FSUUID, path); err != nil {
+	if err := h.ESL.RecordStart(ctx, s.FSUUID, path); err != nil {
 		slog.Error("RecordStart failed", "err", err)
 		http.Error(w, `{"error":"record start failed"}`, http.StatusInternalServerError)
 		return
@@ -189,7 +189,7 @@ func (h *ControlHandler) RecordStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.ESL.RecordStop(s.FSUUID); err != nil {
+	if err := h.ESL.RecordStop(ctx, s.FSUUID); err != nil {
 		slog.Error("RecordStop failed", "err", err)
 		http.Error(w, `{"error":"record stop failed"}`, http.StatusInternalServerError)
 		return
@@ -221,7 +221,7 @@ func (h *ControlHandler) BridgeCalls(w http.ResponseWriter, r *http.Request) {
 	h.notifyBridge("ai-pause", sA.FSUUID)
 
 	// Bridge via ESL
-	if err := h.ESL.Bridge(sA.FSUUID, sB.FSUUID); err != nil {
+	if err := h.ESL.Bridge(ctx, sA.FSUUID, sB.FSUUID); err != nil {
 		sA.SetAIPaused(false)
 		slog.Error("Bridge failed", "err", err)
 		http.Error(w, `{"error":"bridge failed"}`, http.StatusInternalServerError)
@@ -252,7 +252,7 @@ func (h *ControlHandler) UnbridgeCalls(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Unbridge via ESL (park)
-	if err := h.ESL.Unbridge(sA.FSUUID); err != nil {
+	if err := h.ESL.Unbridge(ctx, sA.FSUUID); err != nil {
 		slog.Error("Unbridge failed", "err", err)
 		http.Error(w, `{"error":"unbridge failed"}`, http.StatusInternalServerError)
 		return
@@ -273,7 +273,7 @@ func (h *ControlHandler) BargeIn(w http.ResponseWriter, r *http.Request) {
 	fsUUID := chi.URLParam(r, "uuid")
 	slog.Info("Barge-in request received", "fs_uuid", fsUUID)
 
-	if err := h.ESL.Break(fsUUID); err != nil {
+	if err := h.ESL.Break(r.Context(), fsUUID); err != nil {
 		slog.Error("uuid_break failed", "err", err)
 		http.Error(w, `{"error":"break failed"}`, http.StatusInternalServerError)
 		return
@@ -302,7 +302,7 @@ func (h *ControlHandler) Eavesdrop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.ESL.Eavesdrop(req.SupervisorUUID, s.FSUUID); err != nil {
+	if err := h.ESL.Eavesdrop(ctx, req.SupervisorUUID, s.FSUUID); err != nil {
 		slog.Error("Eavesdrop failed", "err", err)
 		http.Error(w, `{"error":"eavesdrop failed"}`, http.StatusInternalServerError)
 		return
@@ -333,7 +333,7 @@ func (h *ControlHandler) AttendedTransfer(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := h.ESL.AttendedTransfer(s.FSUUID, req.Target); err != nil {
+	if err := h.ESL.AttendedTransfer(ctx, s.FSUUID, req.Target); err != nil {
 		slog.Error("Attended transfer failed", "err", err)
 		http.Error(w, `{"error":"attended transfer failed"}`, http.StatusInternalServerError)
 		return
@@ -370,7 +370,7 @@ func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr 
 			slog.Error("PubSub dtmf payload parse failed", "err", err)
 			return
 		}
-		if err := eslClient.SendDtmf(s.FSUUID, req.Digits); err != nil {
+		if err := eslClient.SendDtmf(ctx, s.FSUUID, req.Digits); err != nil {
 			slog.Error("PubSub dtmf execution failed", "session_id", msg.SessionID, "err", err)
 		}
 
@@ -380,7 +380,7 @@ func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr 
 			slog.Error("PubSub transfer payload parse failed", "err", err)
 			return
 		}
-		if err := eslClient.Transfer(s.FSUUID, req.Target); err != nil {
+		if err := eslClient.Transfer(ctx, s.FSUUID, req.Target); err != nil {
 			slog.Error("PubSub transfer execution failed", "session_id", msg.SessionID, "err", err)
 		}
 		if s.IvrEventCh != nil {
@@ -393,7 +393,7 @@ func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr 
 
 	case "record_start":
 		path := fmt.Sprintf("/recordings/%s.wav", s.SessionID)
-		if err := eslClient.RecordStart(s.FSUUID, path); err != nil {
+		if err := eslClient.RecordStart(ctx, s.FSUUID, path); err != nil {
 			slog.Error("PubSub record_start failed", "session_id", msg.SessionID, "err", err)
 			return
 		}
@@ -406,7 +406,7 @@ func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr 
 		}
 
 	case "record_stop":
-		if err := eslClient.RecordStop(s.FSUUID); err != nil {
+		if err := eslClient.RecordStop(ctx, s.FSUUID); err != nil {
 			slog.Error("PubSub record_stop failed", "session_id", msg.SessionID, "err", err)
 			return
 		}

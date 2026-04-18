@@ -22,7 +22,7 @@ import (
 
 // StatsHandler handles call statistics requests.
 type StatsHandler struct {
-	ESL      *esl.Client
+	ESL      esl.Commander
 	Sessions session.Store
 }
 
@@ -42,13 +42,14 @@ type callStats struct {
 // GetStats handles GET /api/v1/calls/{id}/stats.
 func (h *StatsHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 	callID := chi.URLParam(r, "id")
-	s, ok := h.Sessions.Get(callID)
+	ctx := r.Context()
+	s, ok := h.Sessions.Get(ctx, callID)
 	if !ok {
 		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
 		return
 	}
 
-	dump, err := h.ESL.Dump(s.FSUUID)
+	dump, err := h.ESL.Dump(ctx, s.FSUUID)
 	if err != nil {
 		http.Error(w, `{"error":"uuid_dump failed"}`, http.StatusInternalServerError)
 		return

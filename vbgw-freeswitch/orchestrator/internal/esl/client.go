@@ -21,7 +21,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+var tracer = otel.Tracer("vbgw-esl")
 
 // EventHandler is called for each received ESL event.
 type EventHandler func(evt *Event)
@@ -194,11 +201,19 @@ func (c *Client) Close() {
 
 // SendAPI sends an ESL API command and waits for the response via apiRespCh.
 // Q-04: Uses eventLoop for reading to avoid reader contention.
-func (c *Client) SendAPI(command string) (string, error) {
+func (c *Client) SendAPI(ctx context.Context, command string) (string, error) {
+	ctx, span := tracer.Start(ctx, "esl.SendAPI",
+		trace.WithAttributes(attribute.String("esl.command", command)),
+		trace.WithSpanKind(trace.SpanKindClient),
+	)
+	defer span.End()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if err := c.sendCommandLocked(fmt.Sprintf("api %s", command)); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return "", err
 	}
 
@@ -207,18 +222,31 @@ func (c *Client) SendAPI(command string) (string, error) {
 	case resp := <-c.apiRespCh:
 		return resp, nil
 	case <-time.After(10 * time.Second):
-		return "", fmt.Errorf("ESL API timeout: %s", command)
+		err := fmt.Errorf("ESL API timeout: %s", command)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return "", err
+	case <-ctx.Done():
+		return "", ctx.Err()
 	case <-c.ctx.Done():
 		return "", c.ctx.Err()
 	}
 }
 
 // SendBgAPI sends an ESL background API command.
-func (c *Client) SendBgAPI(command string) (string, error) {
+func (c *Client) SendBgAPI(ctx context.Context, command string) (string, error) {
+	ctx, span := tracer.Start(ctx, "esl.SendBgAPI",
+		trace.WithAttributes(attribute.String("esl.command", command)),
+		trace.WithSpanKind(trace.SpanKindClient),
+	)
+	defer span.End()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if err := c.sendCommandLocked(fmt.Sprintf("bgapi %s", command)); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return "", err
 	}
 
@@ -226,7 +254,12 @@ func (c *Client) SendBgAPI(command string) (string, error) {
 	case resp := <-c.apiRespCh:
 		return resp, nil
 	case <-time.After(10 * time.Second):
-		return "", fmt.Errorf("ESL bgapi timeout: %s", command)
+		err := fmt.Errorf("ESL bgapi timeout: %s", command)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return "", err
+	case <-ctx.Done():
+		return "", ctx.Err()
 	case <-c.ctx.Done():
 		return "", c.ctx.Err()
 	}

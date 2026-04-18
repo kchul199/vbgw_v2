@@ -53,6 +53,14 @@ type Config struct {
 	CDRWebhookURL    string
 	CDRWebhookSecret string
 
+	// JWT Authentication
+	JWTSecret string
+	JWTIssuer string
+
+	// OpenTelemetry
+	OTelEndpoint string
+	OTelEnabled  bool
+
 	// Runtime
 	RuntimeProfile string
 	LogLevel       string
@@ -81,6 +89,10 @@ func Load() *Config {
 		RecordingMaxMB:     int64(envInt("RECORDING_MAX_MB", 1024)),
 		CDRWebhookURL:      envStr("CDR_WEBHOOK_URL", ""),
 		CDRWebhookSecret:   envStr("CDR_WEBHOOK_SECRET", ""),
+		JWTSecret:          envStr("JWT_SECRET", ""),
+		JWTIssuer:          envStr("JWT_ISSUER", "vbgw-orchestrator"),
+		OTelEndpoint:       envStr("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
+		OTelEnabled:        envBool("OTEL_ENABLED", false),
 		RuntimeProfile:     envStr("RUNTIME_PROFILE", "dev"),
 		LogLevel:           envStr("LOG_LEVEL", "info"),
 	}

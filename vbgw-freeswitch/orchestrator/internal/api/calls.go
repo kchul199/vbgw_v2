@@ -70,7 +70,7 @@ func (h *CallsHandler) CreateCall(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Creating outbound call", "session_id", sessionID, "target_masked", maskURI(req.TargetURI))
 
 	// ESL originate (background API) — P-07: with Caller-ID, Q-03: conditional standby
-	_, err := h.ESL.Originate(sessionID, req.TargetURI, req.CallerID, h.UseStandbyGW)
+	_, err := h.ESL.Originate(ctx, sessionID, req.TargetURI, req.CallerID, h.UseStandbyGW)
 	if err != nil {
 		h.Sessions.Release(ctx, sessionID)
 		slog.Error("ESL originate failed", "err", err)
