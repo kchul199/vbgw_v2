@@ -15,10 +15,8 @@
 package vad
 
 import (
-	"fmt"
 	"log/slog"
 	"os"
-	"sync"
 
 	ort "github.com/yalue/onnxruntime_go"
 )
@@ -34,7 +32,8 @@ const (
 // Engine handles the shared ONNX model and environment.
 type Engine struct {
 	modelPath string
-	session   *ort.AdvancedSession
+	session   *ort.DynamicAdvancedSession
+	isV4      bool
 }
 
 // Instance manages per-session VAD state (LSTM hidden states and buffers).
@@ -70,11 +69,6 @@ func NewEngine(modelPath string) *Engine {
 }
 
 func (e *Engine) loadModel() error {
-	// Dummy tensors to initialize AdvancedSession (names only for now)
-	inputShape := ort.NewShape(1, vadWindowSamples)
-	srShape := ort.NewShape(1)
-	hShape := ort.NewShape(2, 1, 64)
-	outputShape := ort.NewShape(1, 1)
 
 	options, err := ort.NewSessionOptions()
 	if err == nil {
@@ -82,15 +76,26 @@ func (e *Engine) loadModel() error {
 		options.SetInterOpNumThreads(1)
 	}
 
-	// Create a dummy session to verify the model and get handle
-	e.session, err = ort.NewAdvancedSession(
+	// Try current version Silero VAD v4/v5 inputs
+	e.session, err = ort.NewDynamicAdvancedSession(
 		e.modelPath,
 		[]string{"input", "sr", "h", "c"},
 		[]string{"output", "hn", "cn"},
-		nil, // inputs will be bound per Instance
-		nil, // outputs will be bound per Instance
 		options,
 	)
+	if err == nil {
+		e.isV4 = true
+	} else {
+		slog.Warn("VAD v4/v5 init failed, trying v3/simple mode", "err", err)
+		// Fallback for older or simplified models
+		e.session, err = ort.NewDynamicAdvancedSession(
+			e.modelPath,
+			[]string{"input"},
+			[]string{"output"},
+			options,
+		)
+		e.isV4 = false
+	}
 	return err
 }
 
@@ -108,12 +113,15 @@ func (e *Engine) NewInstance() *Instance {
 	// Allocate per-instance tensors
 	var err error
 	inst.input, err = ort.NewEmptyTensor[float32](ort.NewShape(1, vadWindowSamples))
-	inst.sr, err = ort.NewTensor(ort.NewShape(1), []int64{sampleRate})
-	inst.h, err = ort.NewEmptyTensor[float32](ort.NewShape(2, 1, 64))
-	inst.c, err = ort.NewEmptyTensor[float32](ort.NewShape(2, 1, 64))
 	inst.output, err = ort.NewEmptyTensor[float32](ort.NewShape(1, 1))
-	inst.hn, err = ort.NewEmptyTensor[float32](ort.NewShape(2, 1, 64))
-	inst.cn, err = ort.NewEmptyTensor[float32](ort.NewShape(2, 1, 64))
+
+	if e.isV4 {
+		inst.sr, err = ort.NewTensor(ort.NewShape(1), []int64{sampleRate})
+		inst.h, err = ort.NewEmptyTensor[float32](ort.NewShape(2, 1, 64))
+		inst.c, err = ort.NewEmptyTensor[float32](ort.NewShape(2, 1, 64))
+		inst.hn, err = ort.NewEmptyTensor[float32](ort.NewShape(2, 1, 64))
+		inst.cn, err = ort.NewEmptyTensor[float32](ort.NewShape(2, 1, 64))
+	}
 
 	if err != nil {
 		slog.Error("Failed to allocate VAD instance tensors", "err", err)
@@ -159,10 +167,20 @@ func (inst *Instance) infer(samples []int16) bool {
 	copy(inst.c.GetData(), inst.cn.GetData())
 
 	// Run inference binding this instance's tensors
-	inputs := []ort.ArbitraryTensor{inst.input, inst.sr, inst.h, inst.c}
-	outputs := []ort.ArbitraryTensor{inst.output, inst.hn, inst.cn}
+	var inputs []ort.ArbitraryTensor
+	var outputs []ort.ArbitraryTensor
 
-	if err := inst.engine.session.RunCustom(nil, inputs, outputs); err != nil {
+	if inst.h != nil && inst.c != nil && inst.hn != nil && inst.cn != nil {
+		// Silero VAD v4/v5 (with state tensors)
+		inputs = []ort.ArbitraryTensor{inst.input, inst.sr, inst.h, inst.c}
+		outputs = []ort.ArbitraryTensor{inst.output, inst.hn, inst.cn}
+	} else {
+		// Silero VAD v3 or simple mode
+		inputs = []ort.ArbitraryTensor{inst.input}
+		outputs = []ort.ArbitraryTensor{inst.output}
+	}
+
+	if err := inst.engine.session.Run(inputs, outputs); err != nil {
 		slog.Error("VAD inference failed", "err", err)
 		return energyDetectFallback(samples)
 	}

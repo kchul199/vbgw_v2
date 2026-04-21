@@ -1,154 +1,135 @@
-# docker-compose.yml
-# 변경이력: v1.0.0 | 2026-04-07 | [Implementer] | 최초 생성 | Phase 1 PoC 3-tier 스택
-# 변경이력: v1.1.0 | 2026-04-09 | [Implementer] | 버전 업그레이드 | FreeSWITCH 1.10 → 1.10.12
-# 변경이력: v1.2.0 | 2026-04-09 | [Implementer] | T-05,T-15,T-17 | ESL/API 기본값 제거, FS 헬스체크 강화, audio_fork TLS
 version: "3.9"
 
 services:
   # ===== Tier 1: FreeSWITCH Media Engine =====
   freeswitch:
-    image: signalwire/freeswitch:1.10.12
+    image: drachtio/drachtio-freeswitch-mrf:latest
+    platform: linux/amd64
     container_name: vbgw-freeswitch
+    privileged: true
+    # Force config path and ensure it stays in foreground
+    entrypoint: ["/usr/local/freeswitch/bin/freeswitch", "-nc", "-nf", "-nonat", "-conf", "/etc/freeswitch", "-log", "/usr/local/freeswitch/log", "-db", "/usr/local/freeswitch/db"]
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "5061:5061/tcp"
+      - "8021:8021/tcp"
+      - "16384-16484:16384-16484/udp"
+    networks:
+      - vbgw-net
     volumes:
-      - ./config/freeswitch:/etc/freeswitch:ro
+      - ./config/freeswitch:/etc/freeswitch
       - ./recordings:/recordings
       - ./logs/freeswitch:/var/log/freeswitch
     environment:
       - SIP_PORT=${SIP_PORT:-5060}
       - SIP_TLS_PORT=${SIP_TLS_PORT:-5061}
       - SIP_TLS_ONLY=${SIP_TLS_ONLY:-false}
-      - SIP_TLS_CERT_DIR=${SIP_TLS_CERT_DIR:-/etc/freeswitch/tls}
       - SRTP_MODE=${SRTP_MODE:-optional}
-      - EXTERNAL_RTP_IP=${EXTERNAL_RTP_IP:-auto-nat}
-      - EXTERNAL_SIP_IP=${EXTERNAL_SIP_IP:-auto-nat}
-      - STUN_ENABLED=${STUN_ENABLED:-true}
-      - PRACK_ENABLED=${PRACK_ENABLED:-true}
-      - SESSION_TIMER_ENABLED=${SESSION_TIMER_ENABLED:-true}
-      - SESSION_TIMEOUT=${SESSION_TIMEOUT:-1800}
-      - MIN_SE=${MIN_SE:-90}
-      - ANSWER_DELAY_MS=${ANSWER_DELAY_MS:-200}
-      - RTP_PORT_MIN=${RTP_PORT_MIN:-16384}
-      - RTP_PORT_MAX=${RTP_PORT_MAX:-16584}
-      - JB_INIT_MS=${JB_INIT_MS:-100}
-      - JB_MIN_MS=${JB_MIN_MS:-60}
-      - JB_MAX_MS=${JB_MAX_MS:-500}
-      - PBX_HOST=${PBX_HOST:-}
-      - PBX_USERNAME=${PBX_USERNAME:-}
-      - PBX_PASSWORD=${PBX_PASSWORD:-}
-      - PBX_REGISTER=${PBX_REGISTER:-false}
-      - PBX_STANDBY_HOST=${PBX_STANDBY_HOST:-127.0.0.2}
-      - PBX_STANDBY_USERNAME=${PBX_STANDBY_USERNAME:-}
-      - PBX_STANDBY_PASSWORD=${PBX_STANDBY_PASSWORD:-}
-      - PBX_STANDBY_REGISTER=${PBX_STANDBY_REGISTER:-false}
-      - INBOUND_CODEC_PREFS=${INBOUND_CODEC_PREFS:-PCMU@8000h@20i,PCMA@8000h@20i,G722@16000h@20i,opus@48000h@20i}
-      - OUTBOUND_CODEC_PREFS=${OUTBOUND_CODEC_PREFS:-PCMU@8000h@20i,PCMA@8000h@20i,G722@16000h@20i,opus@48000h@20i}
-      - HOLD_MUSIC=${HOLD_MUSIC:-local_stream://moh}
-      - BRIDGE_HOST=${BRIDGE_HOST:-127.0.0.1}
-      - BRIDGE_WS_PORT=${BRIDGE_WS_PORT:-8090}
-      # T-05: Removed default 'ClueCon' — MUST set in .env
+      - EXTERNAL_RTP_IP=${EXTERNAL_RTP_IP:-192.168.219.123}
+      - EXTERNAL_SIP_IP=${EXTERNAL_SIP_IP:-192.168.219.123}
       - ESL_PASSWORD=${ESL_PASSWORD}
-      # T-06: Audio fork TLS scheme (ws or wss)
-      - AUDIO_FORK_SCHEME=${AUDIO_FORK_SCHEME:-ws}
-      # FS-1: SIP ACL — restrict to PBX IPs (default 0.0.0.0/0 = allow all for dev)
-      - PBX_ACL_IP1=${PBX_ACL_IP1:-0.0.0.0/0}
-      - PBX_ACL_IP2=${PBX_ACL_IP2:-0.0.0.0/0}
-    # T-15: Enhanced healthcheck — verify Sofia SIP profile is actually running
     healthcheck:
-      test: ["CMD", "sh", "-c", "fs_cli -x 'sofia status' | grep -q 'RUNNING' && fs_cli -x 'status' | grep -q 'UP'"]
+      test: ["CMD", "/usr/local/freeswitch/bin/fs_cli", "-p", "ClueConSecretDev", "-x", "status"]
       interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+      timeout: 5s
+      retries: 3
 
-  # ===== Tier 1.5: Redis Session Store =====
+  # ===== Tier 2: Redis State Store =====
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     container_name: vbgw-redis
     restart: unless-stopped
-    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    command: ["redis-server", "--port", "16379", "--save", "60", "1", "--loglevel", "warning"]
     ports:
-      - "127.0.0.1:6379:6379"
+      - "16379:16379"
+    networks:
+      - vbgw-net
     volumes:
       - ./redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-p", "16379", "ping"]
       interval: 10s
       timeout: 5s
       retries: 3
 
-  # ===== Tier 2: Go Orchestrator =====
+  # ===== Tier 3: Bridge (VAD/Audio Fork) =====
+  bridge:
+    build:
+      context: ./bridge
+      dockerfile: Dockerfile
+    image: vbgw-freeswitch-bridge:latest
+    container_name: vbgw-bridge
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+      - "8092:8092"
+    networks:
+      - vbgw-net
+    volumes:
+      - ./models:/models
+    environment:
+      - BRIDGE_INTERNAL_PORT=${BRIDGE_INTERNAL_PORT:-8092}
+      - BRIDGE_WS_PORT=${BRIDGE_WS_PORT:-8090}
+      - AI_GRPC_ADDR=vbgw-ai:8091
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ORT_API_VERSION=17
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "echo > /dev/tcp/127.0.0.1/8091"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ===== Tier 4: Orchestrator (Session Manager) =====
   orchestrator:
     build:
       context: ./orchestrator
       dockerfile: Dockerfile
+    image: vbgw-freeswitch-orchestrator:latest
     container_name: vbgw-orchestrator
     restart: unless-stopped
-    network_mode: host
-    volumes:
-      - ./recordings:/recordings
-      - ./logs/orchestrator:/var/log/orchestrator
+    depends_on:
+      freeswitch:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    networks:
+      - vbgw-net
     environment:
-      - ESL_HOST=${ESL_HOST:-127.0.0.1}
-      - ESL_PORT=${ESL_PORT:-8021}
-      # T-05: Removed default 'ClueCon'
-      - ESL_PASSWORD=${ESL_PASSWORD}
-      - BRIDGE_HOST=${BRIDGE_HOST:-127.0.0.1}
-      - BRIDGE_INTERNAL_PORT=${BRIDGE_INTERNAL_PORT:-8091}
       - HTTP_PORT=${HTTP_PORT:-8080}
-      # T-17: Removed default 'changeme-admin-key'
-      - ADMIN_API_KEY=${ADMIN_API_KEY}
-      - RATE_LIMIT_RPS=${RATE_LIMIT_RPS:-20}
-      - RATE_LIMIT_BURST=${RATE_LIMIT_BURST:-40}
-      - MAX_SESSIONS=${MAX_SESSIONS:-100}
-      - RECORDING_ENABLE=${RECORDING_ENABLE:-false}
-      - RECORDING_DIR=${RECORDING_DIR:-/recordings}
-      - RECORDING_MAX_DAYS=${RECORDING_MAX_DAYS:-30}
-      - RECORDING_MAX_MB=${RECORDING_MAX_MB:-1024}
-      - RUNTIME_PROFILE=${RUNTIME_PROFILE:-dev}
+      - ESL_HOST=${ESL_HOST:-freeswitch}
+      - ESL_PORT=${ESL_PORT:-8021}
+      - ESL_PASSWORD=${ESL_PASSWORD}
+      - BRIDGE_INTERNAL_PORT=${BRIDGE_INTERNAL_PORT:-8092}
+      - BRIDGE_HOST=${BRIDGE_HOST:-bridge}
+      - AI_GRPC_ADDR=${AI_GRPC_ADDR:-vbgw-ai:8091}
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - IVR_TRANSFER_TARGET=${IVR_TRANSFER_TARGET:-}
-      - REDIS_ADDR=${REDIS_ADDR:-127.0.0.1:6379}
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/live"]
       interval: 10s
       timeout: 5s
       retries: 3
-    depends_on:
-      freeswitch:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
 
-  # ===== Tier 3: WebSocket Bridge =====
-  bridge:
+  vbgw-ai:
+    container_name: vbgw-ai
+    platform: linux/arm64
     build:
-      context: ./bridge
+      context: ../vbgw-ai
       dockerfile: Dockerfile
-    container_name: vbgw-bridge
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - ./models:/models:ro
-      - ./logs/bridge:/var/log/bridge
+    ports:
+      - "8091:8091"
+    networks:
+      - vbgw-net
+    env_file:
+      - ../vbgw-ai/.env
     environment:
-      - WS_PORT=${BRIDGE_WS_PORT:-8090}
-      - INTERNAL_PORT=${BRIDGE_INTERNAL_PORT:-8091}
-      - AI_GRPC_ADDR=${AI_GRPC_ADDR:-127.0.0.1:50051}
-      - AI_GRPC_TLS=${AI_GRPC_TLS:-false}
-      - ONNX_MODEL_PATH=${ONNX_MODEL_PATH:-/models/silero_vad.onnx}
-      - GRPC_MAX_RETRIES=${GRPC_MAX_RETRIES:-5}
-      - GRPC_MAX_BACKOFF_MS=${GRPC_MAX_BACKOFF_MS:-4000}
-      # T-28: Reduced from 86400 (24h) to 7200 (2h) to prevent zombie streams
-      - GRPC_STREAM_DEADLINE_SECS=${GRPC_STREAM_DEADLINE_SECS:-7200}
-      - ORCHESTRATOR_URL=http://127.0.0.1:${HTTP_PORT:-8080}
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8091/internal/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    depends_on:
-      freeswitch:
-        condition: service_healthy
+      - PORT=8091
+      - LOG_LEVEL=debug
+    restart: always
+
+networks:
+  vbgw-net:
+    driver: bridge

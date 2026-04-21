@@ -26,8 +26,8 @@ import (
 )
 
 const (
-	pcmChCap = 200 // PCM frame channel capacity
-	ttsChCap = 200 // TTS frame channel capacity
+	pcmChCap = 1000 // PCM frame channel capacity
+	ttsChCap = 1000 // TTS frame channel capacity
 )
 
 // Session manages the 4-goroutine pipeline for a single WS connection.
