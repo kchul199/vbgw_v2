@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,18 +20,18 @@ func newStatsTestRouter(h *StatsHandler) *chi.Mux {
 }
 
 func TestGetStats_Success(t *testing.T) {
-	sessions := session.NewManager(100)
-	s := session.NewSession("call-1", "fs-1", "010", "1001")
-	sessions.AddIfUnderCapacity(s)
+	sessions := session.NewMemoryStore(100)
+	s := session.NewSession("node-test", "call-1", "fs-1", "010", "1001")
+	sessions.AddIfUnderCapacity(context.Background(), s)
 
 	h := &StatsHandler{
-		ESL: &mockESL{
+		ESL: &mockESLCalls{
 			dumpResp: map[string]string{
-				"channel_state":                "CS_EXECUTE",
-				"read_codec":                   "PCMU",
-				"write_codec":                  "PCMU",
-				"rtp_audio_recv_pt":            "0",
-				"rtp_audio_lost_pt":            "0",
+				"channel_state":                 "CS_EXECUTE",
+				"read_codec":                    "PCMU",
+				"write_codec":                   "PCMU",
+				"rtp_audio_recv_pt":             "0",
+				"rtp_audio_lost_pt":             "0",
 				"rtp_audio_jitter_packet_count": "2",
 			},
 		},
@@ -62,8 +63,8 @@ func TestGetStats_Success(t *testing.T) {
 
 func TestGetStats_SessionNotFound(t *testing.T) {
 	h := &StatsHandler{
-		ESL:      &mockESL{},
-		Sessions: session.NewManager(100),
+		ESL:      &mockESLCalls{},
+		Sessions: session.NewMemoryStore(100),
 	}
 	router := newStatsTestRouter(h)
 
@@ -77,12 +78,12 @@ func TestGetStats_SessionNotFound(t *testing.T) {
 }
 
 func TestGetStats_DumpFailure(t *testing.T) {
-	sessions := session.NewManager(100)
-	s := session.NewSession("call-1", "fs-1", "010", "1001")
-	sessions.AddIfUnderCapacity(s)
+	sessions := session.NewMemoryStore(100)
+	s := session.NewSession("node-test", "call-1", "fs-1", "010", "1001")
+	sessions.AddIfUnderCapacity(context.Background(), s)
 
 	h := &StatsHandler{
-		ESL: &mockESL{
+		ESL: &mockESLCalls{
 			dumpErr: fmt.Errorf("-ERR No Such Channel!"),
 		},
 		Sessions: sessions,

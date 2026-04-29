@@ -21,8 +21,12 @@ import (
 // Engine wraps the VAD model. Stub mode: energy-based heuristic.
 type Engine struct {
 	modelPath string
-	mu        sync.Mutex
-	buffer    []int16
+}
+
+// Instance manages per-session stub state.
+type Instance struct {
+	mu     sync.Mutex
+	buffer []int16
 }
 
 // NewEngine creates a VAD engine in stub mode.
@@ -31,22 +35,28 @@ func NewEngine(modelPath string) *Engine {
 		"model_path", modelPath)
 	return &Engine{
 		modelPath: modelPath,
-		buffer:    make([]int16, 0, vadWindowSamples*2),
+	}
+}
+
+// NewInstance creates a new VAD instance for a session.
+func (e *Engine) NewInstance() *Instance {
+	return &Instance{
+		buffer: make([]int16, 0, vadWindowSamples*2),
 	}
 }
 
 // Process takes raw PCM bytes and returns speech detection via energy heuristic.
-func (e *Engine) Process(pcmBytes []byte) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+func (i *Instance) Process(pcmBytes []byte) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
 
 	samples := bytesToInt16(pcmBytes)
-	e.buffer = append(e.buffer, samples...)
+	i.buffer = append(i.buffer, samples...)
 
 	var isSpeaking bool
-	for len(e.buffer) >= vadWindowSamples {
-		window := e.buffer[:vadWindowSamples]
-		e.buffer = e.buffer[vadWindowSamples:]
+	for len(i.buffer) >= vadWindowSamples {
+		window := i.buffer[:vadWindowSamples]
+		i.buffer = i.buffer[vadWindowSamples:]
 		isSpeaking = energyDetect(window)
 	}
 	return isSpeaking
@@ -56,6 +66,8 @@ func (e *Engine) Process(pcmBytes []byte) bool {
 func (e *Engine) Close() {
 	slog.Info("VAD engine closed (stub)")
 }
+
+func (i *Instance) Close() {}
 
 // energyDetect returns true if average absolute amplitude exceeds threshold.
 func energyDetect(samples []int16) bool {
@@ -70,5 +82,5 @@ func energyDetect(samples []int16) bool {
 			sum += int64(s)
 		}
 	}
-	return sum/int64(len(samples)) > 800
+	return sum/int64(len(samples)) > 2000
 }

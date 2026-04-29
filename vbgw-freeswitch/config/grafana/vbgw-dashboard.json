@@ -1,0 +1,120 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Active Calls",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "targets": [{"expr": "vbgw_active_calls", "legendFormat": "Active Calls"}],
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 50}, {"color": "red", "value": 90}]}}}
+    },
+    {
+      "title": "ESL Connection",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "targets": [{"expr": "vbgw_esl_connected", "legendFormat": "ESL"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "Disconnected", "color": "red"}, "1": {"text": "Connected", "color": "green"}}}]}}
+    },
+    {
+      "title": "SIP Registration",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "targets": [{"expr": "vbgw_sip_registered", "legendFormat": "SIP Reg"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "Unregistered", "color": "red"}, "1": {"text": "Registered", "color": "green"}}}]}}
+    },
+    {
+      "title": "Bridge Health",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+      "targets": [{"expr": "vbgw_bridge_healthy", "legendFormat": "Bridge"}]
+    },
+    {
+      "title": "SIP Registration Alarm",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "targets": [{"expr": "vbgw_sip_registration_alarm", "legendFormat": "Alarm"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "OK", "color": "green"}, "1": {"text": "ALARM", "color": "red"}}}]}}
+    },
+    {
+      "title": "Active Calls Over Time",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [{"expr": "vbgw_active_calls", "legendFormat": "Active Calls"}]
+    },
+    {
+      "title": "Service Active Calls",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [{"expr": "vbgw_service_active_calls", "legendFormat": "{{service}}"}]
+    },
+    {
+      "title": "Service Capacity (Max vs Active)",
+      "type": "bargauge",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "targets": [
+        {"expr": "vbgw_service_capacity_max", "legendFormat": "{{service}} Max"},
+        {"expr": "vbgw_service_active_calls", "legendFormat": "{{service}} Active"}
+      ]
+    },
+    {
+      "title": "Queue Depth by Service",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "targets": [{"expr": "vbgw_service_queue_depth", "legendFormat": "{{service}}"}]
+    },
+    {
+      "title": "API Latency P95",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(vbgw_api_latency_seconds_bucket[5m])) by (le, path))", "legendFormat": "{{path}}"}]
+    },
+    {
+      "title": "Overflow Events",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+      "targets": [{"expr": "rate(vbgw_overflow_total[5m])", "legendFormat": "{{service}} ({{policy}})"}]
+    },
+    {
+      "title": "Gateway Health",
+      "type": "table",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 28},
+      "targets": [{"expr": "vbgw_gateway_health", "legendFormat": "{{gateway}} {{class}}", "format": "table", "instant": true}]
+    },
+    {
+      "title": "Failover Decisions",
+      "type": "timeseries",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 28},
+      "targets": [{"expr": "rate(vbgw_failover_decisions_total[5m])", "legendFormat": "{{reason}} → {{selected_gateway}}"}]
+    },
+    {
+      "title": "Session Duration Distribution",
+      "type": "histogram",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 34},
+      "targets": [{"expr": "vbgw_session_duration_seconds_bucket", "legendFormat": "{{le}}"}]
+    },
+    {
+      "title": "Call Setup Time (PDD)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 34},
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(vbgw_call_setup_duration_seconds_bucket[5m])) by (le))", "legendFormat": "P95 PDD"}]
+    }
+  ],
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["vbgw", "voicebot"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "VBGW VoiceBot Gateway",
+  "uid": "vbgw-main-dashboard",
+  "version": 1
+}

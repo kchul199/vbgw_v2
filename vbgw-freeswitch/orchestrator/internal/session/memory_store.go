@@ -61,6 +61,17 @@ func (m *MemoryStore) GetByFSUUID(ctx context.Context, fsUUID string) (*SessionS
 	return m.Get(ctx, sidVal.(string))
 }
 
+func (m *MemoryStore) SaveSession(ctx context.Context, s *SessionState) error {
+	if s == nil {
+		return nil
+	}
+	m.sessions.Store(s.SessionID, s)
+	if s.FSUUID != "" {
+		m.uuidIndex.Store(s.FSUUID, s.SessionID)
+	}
+	return nil
+}
+
 func (m *MemoryStore) Release(ctx context.Context, sessionID string) {
 	val, loaded := m.sessions.LoadAndDelete(sessionID)
 	if loaded {
@@ -68,6 +79,9 @@ func (m *MemoryStore) Release(ctx context.Context, sessionID string) {
 		s := val.(*SessionState)
 		if s.FSUUID != "" {
 			m.uuidIndex.Delete(s.FSUUID)
+		}
+		if onRelease := s.releaseHook(); onRelease != nil {
+			onRelease(s.SessionID)
 		}
 		if s.IvrEventCh != nil {
 			close(s.IvrEventCh)

@@ -34,6 +34,7 @@ type Store interface {
 	AddIfUnderCapacity(ctx context.Context, s *SessionState) bool
 	Get(ctx context.Context, sessionID string) (*SessionState, bool)
 	GetByFSUUID(ctx context.Context, fsUUID string) (*SessionState, bool)
+	SaveSession(ctx context.Context, s *SessionState) error
 	Release(ctx context.Context, sessionID string)
 	Count(ctx context.Context) int64
 	WaitAllDrained(ctx context.Context, killFn func(fsUUID string))
@@ -62,9 +63,16 @@ type RedisStore struct {
 	nodeID   string
 	maxCalls int64
 
-	mu          sync.RWMutex                // C-1: protects localMap and localByUUID
-	localMap    map[string]*SessionState    // session_id → *SessionState
-	localByUUID map[string]string           // fs_uuid → session_id
+	mu          sync.RWMutex             // C-1: protects localMap and localByUUID
+	localMap    map[string]*SessionState // session_id → *SessionState
+	localByUUID map[string]string        // fs_uuid → session_id
+}
+
+func (rs *RedisStore) Client() *redis.Client {
+	if rs == nil {
+		return nil
+	}
+	return rs.client
 }
 
 // NewRedisStore creates a new Redis-backed session store.
@@ -102,11 +110,11 @@ func (rs *RedisStore) TryAcquire(ctx context.Context) bool {
 
 func (rs *RedisStore) saveToRedis(ctx context.Context, s *SessionState) error {
 	// Update Export fields before serialization
-	s.mu.RLock()
+	s.mu.Lock()
 	s.AiPausedExport = s.aiPaused
 	s.RecordPathExport = s.recordPath
 	s.BridgedWithExport = s.bridgedWith
-	s.mu.RUnlock()
+	s.mu.Unlock()
 
 	data, err := json.Marshal(s)
 	if err != nil {
@@ -199,6 +207,9 @@ func (rs *RedisStore) Release(ctx context.Context, sessionID string) {
 	rs.mu.Unlock()
 
 	if loaded {
+		if onRelease := s.releaseHook(); onRelease != nil {
+			onRelease(s.SessionID)
+		}
 		if s.IvrEventCh != nil {
 			close(s.IvrEventCh)
 			s.IvrEventCh = nil

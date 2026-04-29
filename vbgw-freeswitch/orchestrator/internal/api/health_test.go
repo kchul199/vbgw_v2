@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -53,9 +54,9 @@ func TestReady_ESLConnected_Returns200(t *testing.T) {
 }
 
 func TestHealth_ReturnsJSONWithActiveCalls(t *testing.T) {
-	sessions := session.NewManager(100)
-	s := session.NewSession("s1", "fs1", "010", "100")
-	sessions.AddIfUnderCapacity(s)
+	sessions := session.NewMemoryStore(100)
+	s := session.NewSession("node-test", "s1", "fs1", "010", "100")
+	sessions.AddIfUnderCapacity(context.Background(), s)
 
 	// Mock Bridge health endpoint
 	bridgeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +90,7 @@ func TestHealth_ReturnsJSONWithActiveCalls(t *testing.T) {
 }
 
 func TestHealth_BridgeDown_ReturnsDegraded(t *testing.T) {
-	sessions := session.NewManager(100)
+	sessions := session.NewMemoryStore(100)
 	// No bridge server → connection refused
 	h := NewHealthHandler(eslStub{connected: true}, sessions, "http://127.0.0.1:19999")
 	req := httptest.NewRequest("GET", "/health", nil)

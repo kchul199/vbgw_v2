@@ -106,3 +106,16 @@ func TestEvent_Get_URLDecodeFailure(t *testing.T) {
 		t.Fatalf("expected raw %%ZZ, got %s", evt.Get("Bad-Header"))
 	}
 }
+
+func TestEventPayload_UsesPlainEventBody(t *testing.T) {
+	frame := "Content-Type: text/event-plain\nContent-Length: 82\n\nEvent-Name: CHANNEL_CREATE\nUnique-ID: abc-123\nCaller-Caller-ID-Number: 01012345678\n"
+
+	evt := ParseEvent(eventPayload(frame))
+
+	if evt.Name() != "CHANNEL_CREATE" {
+		t.Fatalf("expected CHANNEL_CREATE from frame body, got %q", evt.Name())
+	}
+	if evt.UUID() != "abc-123" {
+		t.Fatalf("expected uuid abc-123, got %q", evt.UUID())
+	}
+}

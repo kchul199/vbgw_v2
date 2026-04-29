@@ -33,19 +33,32 @@ else
     fail ".env file missing (copy from .env.example)"
 fi
 
-# API Key length
+# API/JWT secret length
 if [ -f .env ]; then
     KEY=$(grep "^ADMIN_API_KEY=" .env 2>/dev/null | cut -d'=' -f2- || echo "")
-    if [ ${#KEY} -ge 16 ]; then
-        pass "ADMIN_API_KEY length ≥ 16 chars (${#KEY})"
+    if [ ${#KEY} -ge 32 ]; then
+        pass "ADMIN_API_KEY length ≥ 32 chars (${#KEY})"
     else
-        fail "ADMIN_API_KEY too short (${#KEY} chars, need ≥ 16)"
+        fail "ADMIN_API_KEY too short (${#KEY} chars, need ≥ 32)"
     fi
 
     if echo "${KEY}" | grep -q "changeme"; then
         fail "ADMIN_API_KEY contains 'changeme' — must change for production"
     else
         pass "ADMIN_API_KEY is not default"
+    fi
+
+    JWT=$(grep "^JWT_SECRET=" .env 2>/dev/null | cut -d'=' -f2- || echo "")
+    if [ ${#JWT} -ge 32 ]; then
+        pass "JWT_SECRET length ≥ 32 chars (${#JWT})"
+    else
+        fail "JWT_SECRET too short (${#JWT} chars, need ≥ 32)"
+    fi
+
+    if echo "${JWT}" | grep -Eqi "changeme|dev-"; then
+        fail "JWT_SECRET contains placeholder/dev value — must change for production"
+    else
+        pass "JWT_SECRET is not placeholder/dev value"
     fi
 
     # ESL password
@@ -63,6 +76,13 @@ if [ -f .env ]; then
         pass "RUNTIME_PROFILE = production"
     else
         fail "RUNTIME_PROFILE = '${PROFILE}' (expected 'production')"
+    fi
+
+    REDIS=$(grep "^REDIS_ADDR=" .env 2>/dev/null | cut -d'=' -f2- || echo "")
+    if [ "${REDIS}" = "vbgw-redis:16379" ]; then
+        pass "REDIS_ADDR = vbgw-redis:16379"
+    else
+        fail "REDIS_ADDR = '${REDIS}' (expected 'vbgw-redis:16379')"
     fi
 fi
 

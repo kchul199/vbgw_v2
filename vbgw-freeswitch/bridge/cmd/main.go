@@ -58,7 +58,7 @@ func main() {
 	bargeCtrl := barge.NewController(cfg.OrchestratorURL)
 
 	// Initialize WS server
-	wsServer := ws.NewServer(ctx, vadEngine, grpcPool, bargeCtrl)
+	wsServer := ws.NewServer(ctx, vadEngine, grpcPool, bargeCtrl, cfg.WSAllowedOrigins)
 
 	// WS HTTP server (port 8090 — mod_audio_fork connects here)
 	wsMux := http.NewServeMux()

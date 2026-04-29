@@ -12,14 +12,20 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strings"
+	"time"
 
 	"vbgw-orchestrator/internal/esl"
+	"vbgw-orchestrator/internal/interconnect"
 	"vbgw-orchestrator/internal/ivr"
+	"vbgw-orchestrator/internal/metrics"
+	"vbgw-orchestrator/internal/overflow"
 	"vbgw-orchestrator/internal/session"
 
 	"github.com/go-chi/chi/v5"
@@ -27,16 +33,19 @@ import (
 
 // Input validation patterns (ESL injection prevention)
 var (
-	dtmfPattern     = regexp.MustCompile(`^[0-9*#A-D]{1,20}$`)
-	sipTargetPattern = regexp.MustCompile(`^[a-zA-Z0-9@._:\-/]{1,256}$`)
+	dtmfPattern      = regexp.MustCompile(`^[0-9*#A-D]{1,20}$`)
+	sipTargetPattern = regexp.MustCompile(`^[+a-zA-Z0-9@._:\-/]{1,256}$`)
 )
 
 type ControlHandler struct {
-	ESL        esl.Commander
-	Sessions   session.Store
-	BridgeURL  string
-	httpClient *http.Client
-	NodeID     string
+	ESL             esl.Commander
+	Sessions        session.Store
+	GatewaySelector *interconnect.Selector
+	HandoffManager  *interconnect.HandoffManager
+	OverflowManager *overflow.Manager
+	BridgeURL       string
+	httpClient      *http.Client
+	NodeID          string
 }
 
 type dtmfRequest struct {
@@ -126,10 +135,28 @@ func (h *ControlHandler) Transfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.ESL.Transfer(ctx, s.FSUUID, req.Target); err != nil {
+	if h.OverflowManager != nil && h.OverflowManager.Remove(s.SessionID) {
+		metrics.QueueAbandonTotal.WithLabelValues(s.ServiceName, "manual_transfer").Inc()
+	}
+	confirmed, err := executeTransfer(ctx, h.ESL, h.GatewaySelector, h.HandoffManager, s, req.Target)
+	if err != nil {
 		slog.Error("Transfer failed", "err", err)
 		http.Error(w, `{"error":"transfer failed"}`, http.StatusInternalServerError)
 		return
+	}
+	if confirmed {
+		s.SetAIPaused(true)
+		h.notifyBridge("ai-pause", s.FSUUID)
+		if released, releaseErr := session.ReleaseServiceOwnership(ctx, h.Sessions, s); releaseErr != nil {
+			slog.Error("Failed to persist service ownership release after confirmed transfer handoff", "session_id", s.SessionID, "err", releaseErr)
+		} else if released {
+			slog.Info("Released AI slot after confirmed transfer handoff", "session_id", s.SessionID)
+		}
+	} else {
+		slog.Info("Transfer accepted; retaining AI slot until channel lifecycle confirms release",
+			"session_id", s.SessionID,
+			"target", req.Target,
+		)
 	}
 
 	// Q-06: Send HangupEvent to IVR to clean up state after transfer
@@ -333,10 +360,38 @@ func (h *ControlHandler) AttendedTransfer(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := h.ESL.AttendedTransfer(ctx, s.FSUUID, req.Target); err != nil {
+	if s.NodeID != h.NodeID {
+		if err := h.Sessions.PublishCommand(ctx, s.NodeID, callID, "attended_transfer", req); err != nil {
+			http.Error(w, `{"error":"failed to route command"}`, http.StatusInternalServerError)
+		} else {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"status":"attended_transfer_via_pubsub"}`)
+		}
+		return
+	}
+
+	if h.OverflowManager != nil && h.OverflowManager.Remove(s.SessionID) {
+		metrics.QueueAbandonTotal.WithLabelValues(s.ServiceName, "manual_transfer").Inc()
+	}
+	confirmed, err := executeAttendedTransfer(ctx, h.ESL, h.GatewaySelector, h.HandoffManager, s, req.Target)
+	if err != nil {
 		slog.Error("Attended transfer failed", "err", err)
 		http.Error(w, `{"error":"attended transfer failed"}`, http.StatusInternalServerError)
 		return
+	}
+	if confirmed {
+		s.SetAIPaused(true)
+		h.notifyBridge("ai-pause", s.FSUUID)
+		if released, releaseErr := session.ReleaseServiceOwnership(ctx, h.Sessions, s); releaseErr != nil {
+			slog.Error("Failed to persist service ownership release after confirmed attended handoff", "session_id", s.SessionID, "err", releaseErr)
+		} else if released {
+			slog.Info("Released AI slot after confirmed attended handoff", "session_id", s.SessionID)
+		}
+	} else {
+		slog.Info("Attended transfer accepted; retaining AI slot until channel lifecycle confirms release",
+			"session_id", s.SessionID,
+			"target", req.Target,
+		)
 	}
 
 	slog.Info("Attended transfer initiated", "session_id", s.SessionID, "target", req.Target)
@@ -345,9 +400,19 @@ func (h *ControlHandler) AttendedTransfer(w http.ResponseWriter, r *http.Request
 }
 
 func (h *ControlHandler) notifyBridge(action, uuid string) {
-	url := fmt.Sprintf("%s/internal/%s/%s", h.BridgeURL, action, uuid)
+	notifyBridgeAction(h.BridgeURL, action, uuid, h.httpClient)
+}
+
+func notifyBridgeAction(bridgeURL, action, uuid string, client *http.Client) {
+	if strings.TrimSpace(bridgeURL) == "" || strings.TrimSpace(uuid) == "" {
+		return
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
+	url := fmt.Sprintf("%s/internal/%s/%s", bridgeURL, action, uuid)
 	req, _ := http.NewRequest("POST", url, nil)
-	resp, err := h.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		slog.Error("Bridge notification failed", "action", action, "uuid", uuid, "err", err)
 		return
@@ -356,7 +421,7 @@ func (h *ControlHandler) notifyBridge(action, uuid string) {
 }
 
 // HandleLocalCommand executes a command received via Pub/Sub on the local node where the session resides.
-func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr session.Store, eslClient *esl.Client) {
+func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr session.Store, overflowMgr *overflow.Manager, eslClient esl.Commander, gatewaySelector *interconnect.Selector, handoffMgr *interconnect.HandoffManager, bridgeURL string) {
 	s, ok := sessionMgr.Get(ctx, msg.SessionID)
 	if !ok {
 		slog.Warn("Local command route failed: session not found", "session_id", msg.SessionID)
@@ -380,8 +445,24 @@ func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr 
 			slog.Error("PubSub transfer payload parse failed", "err", err)
 			return
 		}
-		if err := eslClient.Transfer(ctx, s.FSUUID, req.Target); err != nil {
+		if overflowMgr != nil && overflowMgr.Remove(s.SessionID) {
+			metrics.QueueAbandonTotal.WithLabelValues(s.ServiceName, "manual_transfer").Inc()
+		}
+		confirmed, err := executeTransfer(ctx, eslClient, gatewaySelector, handoffMgr, s, req.Target)
+		if err != nil {
 			slog.Error("PubSub transfer execution failed", "session_id", msg.SessionID, "err", err)
+			return
+		}
+		if confirmed {
+			s.SetAIPaused(true)
+			notifyBridgeAction(bridgeURL, "ai-pause", s.FSUUID, nil)
+			if released, releaseErr := session.ReleaseServiceOwnership(ctx, sessionMgr, s); releaseErr != nil {
+				slog.Error("Failed to persist service ownership release after confirmed PubSub transfer handoff", "session_id", msg.SessionID, "err", releaseErr)
+			} else if released {
+				slog.Info("Released AI slot after confirmed PubSub transfer handoff", "session_id", msg.SessionID)
+			}
+		} else {
+			slog.Info("PubSub transfer accepted; retaining AI slot until channel lifecycle confirms release", "session_id", msg.SessionID)
 		}
 		if s.IvrEventCh != nil {
 			select {
@@ -391,6 +472,32 @@ func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr 
 			}
 		}
 
+	case "attended_transfer":
+		var req transferRequest
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			slog.Error("PubSub attended_transfer payload parse failed", "err", err)
+			return
+		}
+		if overflowMgr != nil && overflowMgr.Remove(s.SessionID) {
+			metrics.QueueAbandonTotal.WithLabelValues(s.ServiceName, "manual_transfer").Inc()
+		}
+		confirmed, err := executeAttendedTransfer(ctx, eslClient, gatewaySelector, handoffMgr, s, req.Target)
+		if err != nil {
+			slog.Error("PubSub attended_transfer execution failed", "session_id", msg.SessionID, "err", err)
+			return
+		}
+		if confirmed {
+			s.SetAIPaused(true)
+			notifyBridgeAction(bridgeURL, "ai-pause", s.FSUUID, nil)
+			if released, releaseErr := session.ReleaseServiceOwnership(ctx, sessionMgr, s); releaseErr != nil {
+				slog.Error("Failed to persist service ownership release after confirmed PubSub attended handoff", "session_id", msg.SessionID, "err", releaseErr)
+			} else if released {
+				slog.Info("Released AI slot after confirmed PubSub attended handoff", "session_id", msg.SessionID)
+			}
+		} else {
+			slog.Info("PubSub attended transfer accepted; retaining AI slot until channel lifecycle confirms release", "session_id", msg.SessionID)
+		}
+
 	case "record_start":
 		path := fmt.Sprintf("/recordings/%s.wav", s.SessionID)
 		if err := eslClient.RecordStart(ctx, s.FSUUID, path); err != nil {
@@ -398,11 +505,8 @@ func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr 
 			return
 		}
 		s.SetRecordPath(path)
-		// Persist updated session state to Redis
-		if saver, ok := sessionMgr.(*session.RedisStore); ok {
-			if err := saver.SaveSession(ctx, s); err != nil {
-				slog.Error("Failed to persist session after record_start", "err", err)
-			}
+		if err := sessionMgr.SaveSession(ctx, s); err != nil {
+			slog.Error("Failed to persist session after record_start", "err", err)
 		}
 
 	case "record_stop":
@@ -415,4 +519,63 @@ func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr 
 	default:
 		slog.Warn("Unknown PubSub command action", "action", msg.Action, "session_id", msg.SessionID)
 	}
+}
+
+func executeTransfer(ctx context.Context, commander esl.Commander, selector *interconnect.Selector, handoffMgr *interconnect.HandoffManager, s *session.SessionState, target string) (bool, error) {
+	if isCallcenterQueueTarget(target) {
+		return true, transferToCallcenterQueue(ctx, commander, s, target)
+	}
+	if selector != nil && handoffMgr != nil && interconnect.ShouldUseGatewayTransfer(target) {
+		outcome, err := interconnect.ExecuteGatewayHandoff(ctx, commander, selector, handoffMgr, s.FSUUID, s.CallerID, target)
+		if err != nil {
+			return false, err
+		}
+		return outcome.Confirmed, nil
+	}
+	return false, commander.Transfer(ctx, s.FSUUID, target)
+}
+
+func executeAttendedTransfer(ctx context.Context, commander esl.Commander, selector *interconnect.Selector, handoffMgr *interconnect.HandoffManager, s *session.SessionState, target string) (bool, error) {
+	if isCallcenterQueueTarget(target) {
+		return true, transferToCallcenterQueue(ctx, commander, s, target)
+	}
+	if selector != nil && handoffMgr != nil && interconnect.ShouldUseGatewayTransfer(target) {
+		outcome, err := interconnect.ExecuteGatewayHandoff(ctx, commander, selector, handoffMgr, s.FSUUID, s.CallerID, target)
+		if err != nil {
+			return false, err
+		}
+		return outcome.Confirmed, nil
+	}
+	return false, commander.AttendedTransfer(ctx, s.FSUUID, target, "")
+}
+
+func isCallcenterQueueTarget(target string) bool {
+	target = strings.TrimSpace(strings.ToLower(target))
+	return strings.HasPrefix(target, "callcenter:")
+}
+
+func callcenterQueueRef(target string) string {
+	const prefix = "callcenter:"
+	target = strings.TrimSpace(target)
+	if len(target) < len(prefix) {
+		return ""
+	}
+	if !strings.EqualFold(target[:len(prefix)], prefix) {
+		return ""
+	}
+	return strings.TrimSpace(target[len(prefix):])
+}
+
+func transferToCallcenterQueue(ctx context.Context, commander esl.Commander, s *session.SessionState, target string) error {
+	queueRef := callcenterQueueRef(target)
+	if queueRef == "" {
+		return fmt.Errorf("callcenter target missing queue reference")
+	}
+	if err := commander.SetVar(ctx, s.FSUUID, "vbgw_human_queue", queueRef); err != nil {
+		return err
+	}
+	if err := commander.Break(ctx, s.FSUUID); err != nil {
+		slog.Warn("Failed to break media before callcenter transfer", "session_id", s.SessionID, "err", err)
+	}
+	return commander.Transfer(ctx, s.FSUUID, "vbgw-human-callcenter")
 }

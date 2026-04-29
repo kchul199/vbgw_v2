@@ -1,8 +1,6 @@
 package ws
 
-import (
-	"testing"
-)
+import "testing"
 
 func TestSession_SetAIPaused(t *testing.T) {
 	s := &Session{}
@@ -67,10 +65,10 @@ func TestSession_TTSChannel_NonBlockingDrop(t *testing.T) {
 }
 
 func TestSession_ChannelCapacity(t *testing.T) {
-	if pcmChCap != 200 {
-		t.Fatalf("expected pcmChCap=200, got %d", pcmChCap)
+	if pcmChCap != 1000 {
+		t.Fatalf("expected pcmChCap=1000, got %d", pcmChCap)
 	}
-	if ttsChCap != 200 {
-		t.Fatalf("expected ttsChCap=200, got %d", ttsChCap)
+	if ttsChCap != 1000 {
+		t.Fatalf("expected ttsChCap=1000, got %d", ttsChCap)
 	}
 }

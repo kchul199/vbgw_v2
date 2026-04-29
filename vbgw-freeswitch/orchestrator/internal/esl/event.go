@@ -12,6 +12,7 @@ package esl
 
 import (
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -48,6 +49,53 @@ func (e *Event) CallerID() string {
 // DestNumber returns the Caller-Destination-Number.
 func (e *Event) DestNumber() string {
 	return e.Get("Caller-Destination-Number")
+}
+
+// SourceGateway returns the source gateway if present on the channel.
+func (e *Event) SourceGateway() string {
+	for _, key := range []string{"variable_sip_gateway_name", "sip_gateway_name"} {
+		if value := e.Get(key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// RouteEntryNumber returns the logical entry number chosen by the dialplan.
+func (e *Event) RouteEntryNumber() string {
+	return e.Get("variable_vbgw_entry_number")
+}
+
+// RouteServiceName returns the logical service name chosen by the dialplan.
+func (e *Event) RouteServiceName() string {
+	return e.Get("variable_vbgw_service_name")
+}
+
+// RouteType returns the route type chosen by the dialplan.
+func (e *Event) RouteType() string {
+	return e.Get("variable_vbgw_route_type")
+}
+
+// RouteIngressStage returns the ingress stage chosen by the dialplan.
+func (e *Event) RouteIngressStage() string {
+	return e.Get("variable_vbgw_ingress_stage")
+}
+
+// RoutingConfigVersion returns the routing config version chosen by the dialplan.
+func (e *Event) RoutingConfigVersion() int {
+	v := e.Get("variable_vbgw_routing_config_version")
+	n, _ := strconv.Atoi(v)
+	return n
+}
+
+// RouteOverflowPolicy returns the overflow policy chosen by the dialplan.
+func (e *Event) RouteOverflowPolicy() string {
+	return e.Get("variable_vbgw_overflow_policy")
+}
+
+// RouteOverflowTarget returns the overflow transfer target chosen by the dialplan.
+func (e *Event) RouteOverflowTarget() string {
+	return e.Get("variable_vbgw_overflow_target")
 }
 
 // DtmfDigit returns the DTMF-Digit header.

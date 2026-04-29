@@ -17,26 +17,47 @@ import (
 	"strings"
 )
 
+func (c *Client) primaryPBXGateway() string {
+	if c.primaryGateway != "" {
+		return c.primaryGateway
+	}
+	return "pbx-main"
+}
+
+func (c *Client) standbyPBXGateway() string {
+	if c.standbyGateway != "" {
+		return c.standbyGateway
+	}
+	return "pbx-standby"
+}
+
+func (c *Client) buildOutboundDialString(target string, gatewayOrder []string) string {
+	order := normalizeGatewayOrder(gatewayOrder)
+	if len(order) == 0 {
+		order = []string{c.primaryPBXGateway()}
+	}
+
+	parts := make([]string, 0, len(order))
+	for _, gateway := range order {
+		parts = append(parts, fmt.Sprintf("sofia/gateway/%s/%s", gateway, target))
+	}
+	return strings.Join(parts, "|")
+}
+
 // Originate starts an outbound call via the PBX gateway.
 // P-07: callerID parameter for CID display (Korean telecom law).
 // P-08: Returns bgapi Job-UUID; use CHANNEL_HANGUP event for SIP response code.
-// P-11/Q-03: Tries pbx-main first, falls back to pbx-standby if configured.
-func (c *Client) Originate(ctx context.Context, uuid, target, callerID string, useStandby bool) (string, error) {
+// P-11/Q-03: Uses the provided gateway order and may include a standby fallback.
+func (c *Client) Originate(ctx context.Context, uuid, target, callerID string, gatewayOrder []string) (string, error) {
 	cidParam := ""
 	if callerID != "" {
 		cidParam = fmt.Sprintf(",origination_caller_id_number=%s,origination_caller_id_name=%s",
 			callerID, callerID)
 	}
 
-	gateway := fmt.Sprintf("sofia/gateway/pbx-main/%s", target)
-	// Q-03: Only add standby failover pipe if standby PBX is configured
-	if useStandby {
-		gateway += fmt.Sprintf("|sofia/gateway/pbx-standby/%s", target)
-	}
-
 	cmd := fmt.Sprintf(
 		"originate {origination_uuid=%s%s,failure_causes=NORMAL_TEMPORARY_FAILURE,originate_timeout=30}%s &park()",
-		uuid, cidParam, gateway,
+		uuid, cidParam, c.buildOutboundDialString(target, gatewayOrder),
 	)
 	return c.SendBgAPI(ctx, cmd)
 }
@@ -47,9 +68,24 @@ func (c *Client) SendDtmf(ctx context.Context, uuid, digits string) error {
 	return err
 }
 
+// SetVar sets a channel variable on a live UUID.
+func (c *Client) SetVar(ctx context.Context, uuid, key, value string) error {
+	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_setvar %s %s %s", uuid, key, value))
+	return err
+}
+
 // Transfer performs a blind transfer.
 func (c *Client) Transfer(ctx context.Context, uuid, target string) error {
 	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_transfer %s %s XML default", uuid, target))
+	return err
+}
+
+// TransferViaGateway performs a blind transfer via an explicit PBX/SBC gateway.
+func (c *Client) TransferViaGateway(ctx context.Context, uuid, target, gateway string) error {
+	if gateway == "" {
+		gateway = c.primaryPBXGateway()
+	}
+	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_transfer %s 'sofia/gateway/%s/%s' inline", uuid, gateway, target))
 	return err
 }
 
@@ -142,7 +178,28 @@ func (c *Client) ConferenceKick(ctx context.Context, confName, memberID string) 
 }
 
 // AttendedTransfer performs a two-step attended (consultative) transfer.
-func (c *Client) AttendedTransfer(ctx context.Context, uuid, target string) error {
-	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_transfer %s 'att_xfer::{origination_caller_id_name=Transfer}sofia/gateway/pbx-main/%s' inline", uuid, target))
+func (c *Client) AttendedTransfer(ctx context.Context, uuid, target, gateway string) error {
+	if gateway == "" {
+		_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_transfer %s 'att_xfer::%s' inline", uuid, target))
+		return err
+	}
+	_, err := c.SendAPI(ctx, fmt.Sprintf("uuid_transfer %s 'att_xfer::{origination_caller_id_name=Transfer}sofia/gateway/%s/%s' inline", uuid, gateway, target))
 	return err
+}
+
+func normalizeGatewayOrder(gatewayOrder []string) []string {
+	seen := make(map[string]struct{}, len(gatewayOrder))
+	order := make([]string, 0, len(gatewayOrder))
+	for _, gateway := range gatewayOrder {
+		gateway = strings.TrimSpace(gateway)
+		if gateway == "" {
+			continue
+		}
+		if _, ok := seen[gateway]; ok {
+			continue
+		}
+		seen[gateway] = struct{}{}
+		order = append(order, gateway)
+	}
+	return order
 }

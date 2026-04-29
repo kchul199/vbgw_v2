@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -25,20 +26,6 @@ import (
 	grpcclient "vbgw-bridge/internal/grpc"
 	"vbgw-bridge/internal/vad"
 )
-
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  8192,
-	WriteBufferSize: 8192,
-	CheckOrigin: func(r *http.Request) bool {
-		// Only allow loopback connections (FreeSWITCH mod_audio_fork)
-		remoteIP := r.RemoteAddr
-		if idx := strings.LastIndex(remoteIP, ":"); idx >= 0 {
-			remoteIP = remoteIP[:idx]
-		}
-		remoteIP = strings.Trim(remoteIP, "[]")
-		return remoteIP == "127.0.0.1" || remoteIP == "::1"
-	},
-}
 
 // Server manages WebSocket connections from FreeSWITCH mod_audio_fork.
 type Server struct {
@@ -51,21 +38,74 @@ type Server struct {
 
 	// Buffer pool for audio chunks (standard 32ms/20ms sizes)
 	bufferPool sync.Pool
+
+	upgrader websocket.Upgrader
 }
 
 // NewServer creates a WS server with the given parent context.
-func NewServer(ctx context.Context, vadEngine *vad.Engine, grpcPool *grpcclient.Pool, bargeCtrl *barge.Controller) *Server {
+func NewServer(ctx context.Context, vadEngine *vad.Engine, grpcPool *grpcclient.Pool, bargeCtrl *barge.Controller, allowedOrigins []string) *Server {
 	return &Server{
 		ctx:             ctx,
 		vadEngine:       vadEngine,
 		grpcClientPool:  grpcPool,
 		bargeController: bargeCtrl,
+		upgrader: websocket.Upgrader{
+			ReadBufferSize:  8192,
+			WriteBufferSize: 8192,
+			CheckOrigin:     makeOriginChecker(allowedOrigins),
+		},
 		bufferPool: sync.Pool{
 			New: func() any {
 				// Allocate 2KB to cover G.711/PCM16 frames comfortably
 				return make([]byte, 2048)
 			},
 		},
+	}
+}
+
+func makeOriginChecker(allowedOrigins []string) func(r *http.Request) bool {
+	allowedOriginSet := make(map[string]struct{}, len(allowedOrigins))
+	allowedHostSet := map[string]struct{}{
+		"localhost":       {},
+		"127.0.0.1":       {},
+		"::1":             {},
+		"bridge":          {},
+		"freeswitch":      {},
+		"vbgw-bridge":     {},
+		"vbgw-freeswitch": {},
+	}
+
+	for _, origin := range allowedOrigins {
+		origin = strings.TrimSpace(strings.ToLower(origin))
+		if origin == "" {
+			continue
+		}
+		if parsed, err := url.Parse(origin); err == nil && parsed.Host != "" && parsed.Scheme != "" {
+			allowedOriginSet[parsed.Scheme+"://"+parsed.Host] = struct{}{}
+			allowedHostSet[strings.ToLower(parsed.Hostname())] = struct{}{}
+			continue
+		}
+		allowedHostSet[origin] = struct{}{}
+	}
+
+	return func(r *http.Request) bool {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin == "" {
+			// FreeSWITCH mod_audio_fork connects server-to-server and does not need browser origins.
+			return true
+		}
+
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Host == "" || parsed.Scheme == "" {
+			return false
+		}
+
+		normalizedOrigin := strings.ToLower(parsed.Scheme + "://" + parsed.Host)
+		if _, ok := allowedOriginSet[normalizedOrigin]; ok {
+			return true
+		}
+		_, ok := allowedHostSet[strings.ToLower(parsed.Hostname())]
+		return ok
 	}
 }
 
@@ -79,7 +119,7 @@ func (s *Server) HandleAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	uuid := parts[len(parts)-1]
 
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Error("WS upgrade failed", "uuid", uuid, "err", err)
 		return

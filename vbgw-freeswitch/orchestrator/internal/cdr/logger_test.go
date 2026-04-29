@@ -8,7 +8,7 @@ import (
 )
 
 func TestLogHangup_SetsDuration(t *testing.T) {
-	s := session.NewSession("s1", "fs1", "010", "100")
+	s := session.NewSession("node-test", "s1", "fs1", "010", "100")
 	// Simulate 5 second call
 	s.CreatedAt = time.Now().Add(-5 * time.Second)
 	s.SetAnsweredAt(time.Now().Add(-4 * time.Second))
@@ -22,7 +22,7 @@ func TestLogHangup_SetsDuration(t *testing.T) {
 }
 
 func TestLogHangup_WithBridgedWith(t *testing.T) {
-	s := session.NewSession("s1", "fs1", "010", "100")
+	s := session.NewSession("node-test", "s1", "fs1", "010", "100")
 	s.SetBridgedWith("s2")
 
 	LogHangup(s, "NORMAL_CLEARING")
@@ -33,7 +33,7 @@ func TestLogHangup_WithBridgedWith(t *testing.T) {
 }
 
 func TestLogHangup_ZeroDuration(t *testing.T) {
-	s := session.NewSession("s1", "fs1", "010", "100")
+	s := session.NewSession("node-test", "s1", "fs1", "010", "100")
 	// Call created and immediately hung up
 	LogHangup(s, "ORIGINATOR_CANCEL")
 	// Should not panic, duration ~0

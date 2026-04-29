@@ -9,6 +9,8 @@
  * ─────────────────────────────────────────
  */
 
+package esl
+
 import (
 	"context"
 )
@@ -16,9 +18,11 @@ import (
 // Commander abstracts ESL commands for testability and tracing.
 // *Client satisfies this interface.
 type Commander interface {
-	Originate(ctx context.Context, uuid, target, callerID string, useStandby bool) (string, error)
+	Originate(ctx context.Context, uuid, target, callerID string, gatewayOrder []string) (string, error)
 	SendDtmf(ctx context.Context, uuid, digits string) error
+	SetVar(ctx context.Context, uuid, key, value string) error
 	Transfer(ctx context.Context, uuid, target string) error
+	TransferViaGateway(ctx context.Context, uuid, target, gateway string) error
 	Bridge(ctx context.Context, uuidA, uuidB string) error
 	Unbridge(ctx context.Context, uuid string) error
 	RecordStart(ctx context.Context, uuid, path string) error
@@ -33,7 +37,8 @@ type Commander interface {
 	Eavesdrop(ctx context.Context, supervisorUUID, targetUUID string) error
 	ConferenceKick(ctx context.Context, confName, memberID string) error
 	// FS-3: Attended (consultative) transfer
-	AttendedTransfer(ctx context.Context, uuid, target string) error
+	AttendedTransfer(ctx context.Context, uuid, target, gateway string) error
+	SendAPI(ctx context.Context, cmd string) (string, error)
 }
 
 // Verify *Client implements Commander at compile time.

@@ -15,6 +15,12 @@ set -euo pipefail
 STAGE="${1:-10}"
 FS_IP="${FS_IP:-127.0.0.1}"
 CPP_IP="${CPP_IP:-127.0.0.2}"
+AUTH_HEADER=()
+
+if [ -n "${ADMIN_API_KEY:-}" ]; then
+    AUTH_HEADER=(-H "Authorization: Bearer ${ADMIN_API_KEY}")
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/../results/cutover_$(date +%Y%m%d_%H%M%S)"
 
@@ -39,7 +45,7 @@ check_slo() {
 
     for _ in $(seq 1 "${checks}"); do
         total=$((total + 1))
-        CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${FS_IP}:8080/health" 2>/dev/null || echo "000")
+        CODE=$(curl -s -o /dev/null -w "%{http_code}" "${AUTH_HEADER[@]}" "http://${FS_IP}:8080/health" 2>/dev/null || echo "000")
         if [ "${CODE}" = "200" ]; then
             healthy=$((healthy + 1))
         fi
@@ -54,7 +60,7 @@ check_slo() {
 
     # Check drop rate
     local metrics
-    metrics=$(curl -s "http://${FS_IP}:8080/metrics" 2>/dev/null || echo "")
+    metrics=$(curl -s "${AUTH_HEADER[@]}" "http://${FS_IP}:8080/metrics" 2>/dev/null || echo "")
     local dropped
     dropped=$(echo "${metrics}" | grep "^vbgw_grpc_dropped_frames_total " | awk '{print $2}' || echo "0")
     local errors

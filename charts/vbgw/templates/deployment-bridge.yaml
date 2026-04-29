@@ -4,6 +4,8 @@ metadata:
   name: {{ include "vbgw.fullname" . }}-bridge
   labels:
     app.kubernetes.io/name: bridge
+    app.kubernetes.io/component: bridge
+    vbgw.io/track: stable
 spec:
   replicas: {{ .Values.bridge.replicaCount }}
   strategy:
@@ -14,10 +16,12 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: bridge
+      vbgw.io/track: stable
   template:
     metadata:
       labels:
         app.kubernetes.io/name: bridge
+        vbgw.io/track: stable
     spec:
       containers:
         - name: bridge
@@ -32,8 +36,14 @@ spec:
           env:
             - name: ORT_LIB_PATH
               value: "/usr/local/lib/libonnxruntime.so"
-            - name: GRPC_AI_ADDR
-              value: "{{ .Values.bridge.grpcAiAddr | default \"ai-service:50051\" }}"
+            # bridge config.go 가 읽는 정확한 키 — `AI_GRPC_ADDR` (이전 GRPC_AI_ADDR 은 무시되던 버그).
+            - name: AI_GRPC_ADDR
+              value: {{ .Values.bridge.grpcAiAddr | default "ai-service:50051" | quote }}
+            - name: AI_GRPC_TLS
+              value: {{ .Values.bridge.grpcAiTLS | default false | quote }}
+            # 추적용 — 어느 endpoint 로 흘렀는지 로그/메트릭 라벨에 활용 가능.
+            - name: BRIDGE_TRACK
+              value: "stable"
           livenessProbe:
             tcpSocket:
               port: ws
@@ -60,3 +70,84 @@ spec:
           configMap:
             name: {{ include "vbgw.fullname" . }}-vad-model
             optional: true
+{{- if .Values.bridge.canary.enabled }}
+---
+# ──────────────────────────────────────────────────────────────────────────
+# Bridge canary — 별도 Deployment 로 다른 AI gRPC endpoint 호출.
+# FreeSwitch mod_audio_fork 의 WS 클러스터 분배가 round-robin →
+# 트래픽 비율 = canary.replicaCount / (replicaCount + canary.replicaCount).
+# 예: stable 9 + canary 1 = 10% canary.
+# Service selector 는 stable+canary 공통 label `app.kubernetes.io/name=bridge`
+# 사용 — 두 ReplicaSet 모두 같은 Service 의 endpoint 가 됨.
+# ──────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vbgw.fullname" . }}-bridge-canary
+  labels:
+    app.kubernetes.io/name: bridge
+    app.kubernetes.io/component: bridge
+    vbgw.io/track: canary
+spec:
+  replicas: {{ .Values.bridge.canary.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bridge
+      vbgw.io/track: canary
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bridge
+        vbgw.io/track: canary
+    spec:
+      containers:
+        - name: bridge
+          image: "{{ .Values.bridge.image.repository }}:{{ .Values.bridge.image.tag }}"
+          ports:
+            - name: ws
+              containerPort: 8090
+              protocol: TCP
+            - name: internal
+              containerPort: 8091
+              protocol: TCP
+          env:
+            - name: ORT_LIB_PATH
+              value: "/usr/local/lib/libonnxruntime.so"
+            - name: AI_GRPC_ADDR
+              value: {{ .Values.bridge.canary.grpcAiAddr | quote }}
+            - name: AI_GRPC_TLS
+              value: {{ .Values.bridge.canary.grpcAiTLS | default false | quote }}
+            - name: BRIDGE_TRACK
+              value: "canary"
+          livenessProbe:
+            tcpSocket:
+              port: ws
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            tcpSocket:
+              port: ws
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1Gi"
+          volumeMounts:
+            - name: vad-model
+              mountPath: /models
+              readOnly: true
+      volumes:
+        - name: vad-model
+          configMap:
+            name: {{ include "vbgw.fullname" . }}-vad-model
+            optional: true
+{{- end }}

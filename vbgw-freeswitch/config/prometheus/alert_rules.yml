@@ -1,0 +1,97 @@
+groups:
+  - name: vbgw_critical
+    rules:
+      # ESL 연결 끊김 — 5분간 미복구
+      - alert: ESLDisconnected
+        expr: vbgw_esl_connected == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ESL connection lost"
+          description: "FreeSWITCH ESL connection has been down for 5+ minutes. All call control is unavailable."
+
+      # SIP 등록 해제 — 3분간 미복구
+      - alert: SIPRegistrationLost
+        expr: vbgw_sip_registration_alarm == 1
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PBX SIP registration lost"
+          description: "PBX gateway has been unregistered for 3+ minutes. Outbound calls will fail."
+
+      # API 에러율 > 1%
+      - alert: HighAPIErrorRate
+        expr: |
+          sum(rate(vbgw_api_latency_seconds_count{status=~"5.."}[5m]))
+          / sum(rate(vbgw_api_latency_seconds_count[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API error rate exceeds 1%"
+          description: "HTTP API 5xx error rate has exceeded 1% for 5 minutes."
+
+  - name: vbgw_warning
+    rules:
+      # Bridge 연결 불량
+      - alert: BridgeUnhealthy
+        expr: vbgw_bridge_healthy == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Bridge health check failing"
+          description: "Bridge container health check has been failing for 2+ minutes."
+
+      # Queue depth > 5
+      - alert: QueueOverload
+        expr: vbgw_service_queue_depth > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Service queue depth high"
+          description: "Queue depth for service {{ $labels.service }} exceeds 5 callers."
+
+      # 동시 콜 > 80%
+      - alert: CapacityNearLimit
+        expr: |
+          vbgw_service_active_calls / vbgw_service_capacity_max > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Service capacity near limit"
+          description: "Service {{ $labels.service }} is at {{ $value | humanizePercentage }} capacity."
+
+      # gRPC 스트림 에러 급증
+      - alert: GRPCStreamErrors
+        expr: rate(vbgw_grpc_stream_errors_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "gRPC stream error rate increasing"
+          description: "gRPC stream errors are occurring at {{ $value }} per second."
+
+      # PDD (콜 셋업 시간) > 3초
+      - alert: HighPDD
+        expr: histogram_quantile(0.95, sum(rate(vbgw_call_setup_duration_seconds_bucket[5m])) by (le)) > 3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Post-Dial Delay (P95 > 3s)"
+          description: "Call setup time P95 exceeds 3 seconds."
+
+      # Queue 대기 시간 > 30초
+      - alert: QueueWaitTooLong
+        expr: vbgw_queue_wait_seconds > 30
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue wait time exceeds 30s"
+          description: "Oldest caller in queue for service {{ $labels.service }} has been waiting {{ $value }}s."

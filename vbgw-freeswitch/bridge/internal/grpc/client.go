@@ -103,12 +103,13 @@ func (p *Pool) Connect(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	opts := []grpc.DialOption{
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(16 * 1024 * 1024)),
+	if p.useTLS {
+		return fmt.Errorf("AI_GRPC_TLS=true is not supported by the current bridge client; configure transport credentials or set AI_GRPC_TLS=false")
 	}
 
-	if !p.useTLS {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	opts := []grpc.DialOption{
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(16 * 1024 * 1024)),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	}
 
 	conn, err := grpc.NewClient(p.addr, opts...)

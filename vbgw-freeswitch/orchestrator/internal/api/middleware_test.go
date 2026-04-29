@@ -132,6 +132,21 @@ func TestLoopbackOnlyMiddleware_RejectsExternal(t *testing.T) {
 	}
 }
 
+func TestLoopbackOnlyMiddleware_AllowsDockerBridge(t *testing.T) {
+	handler := LoopbackOnlyMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.RemoteAddr = "172.20.0.5:8080"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for docker bridge IP, got %d", w.Code)
+	}
+}
+
 func TestMetricsMiddleware_RecordsStatusCode(t *testing.T) {
 	handler := MetricsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)

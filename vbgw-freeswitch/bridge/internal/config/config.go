@@ -13,6 +13,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -39,12 +40,15 @@ type Config struct {
 
 	// Logging
 	LogLevel string
+
+	// WebSocket origin policy
+	WSAllowedOrigins []string
 }
 
 func Load() *Config {
 	return &Config{
-		WSPort:           envInt("WS_PORT", 8090),
-		InternalPort:     envInt("INTERNAL_PORT", 8091),
+		WSPort:           envIntAny(8090, "WS_PORT", "BRIDGE_WS_PORT"),
+		InternalPort:     envIntAny(8091, "INTERNAL_PORT", "BRIDGE_INTERNAL_PORT"),
 		AIGrpcAddr:       envStr("AI_GRPC_ADDR", "127.0.0.1:50051"),
 		AIGrpcTLS:        envBool("AI_GRPC_TLS", false),
 		OnnxModelPath:    envStr("ONNX_MODEL_PATH", "/models/silero_vad.onnx"),
@@ -54,6 +58,7 @@ func Load() *Config {
 		GrpcStreamDeadlineS: envInt("GRPC_STREAM_DEADLINE_SECS", 7200),
 		OrchestratorURL:     envStr("ORCHESTRATOR_URL", "http://127.0.0.1:8080"),
 		LogLevel:            envStr("LOG_LEVEL", "info"),
+		WSAllowedOrigins:    envCSV("WS_ALLOWED_ORIGINS"),
 	}
 }
 
@@ -73,6 +78,17 @@ func envInt(key string, fallback int) int {
 	return fallback
 }
 
+func envIntAny(fallback int, keys ...string) int {
+	for _, key := range keys {
+		if v := os.Getenv(key); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				return n
+			}
+		}
+	}
+	return fallback
+}
+
 func envBool(key string, fallback bool) bool {
 	if v := os.Getenv(key); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
@@ -80,4 +96,21 @@ func envBool(key string, fallback bool) bool {
 		}
 	}
 	return fallback
+}
+
+func envCSV(key string) []string {
+	v := os.Getenv(key)
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+
+	parts := strings.Split(v, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	return values
 }

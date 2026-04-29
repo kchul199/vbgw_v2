@@ -15,6 +15,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -118,8 +119,10 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-// LoopbackOnlyMiddleware restricts access to loopback (127.0.0.1) clients only.
-// Used for internal endpoints (Bridge → Orchestrator) that must not be externally accessible.
+var dockerBridgePrefix = netip.MustParsePrefix("172.16.0.0/12")
+
+// LoopbackOnlyMiddleware restricts access to loopback and Docker bridge clients.
+// Used for internal endpoints (Bridge/FreeSWITCH → Orchestrator) that must not be externally accessible.
 func LoopbackOnlyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		remoteIP := r.RemoteAddr
@@ -130,11 +133,21 @@ func LoopbackOnlyMiddleware(next http.Handler) http.Handler {
 		// Remove brackets for IPv6
 		remoteIP = strings.Trim(remoteIP, "[]")
 
+		if remoteIP == "127.0.0.1" || remoteIP == "::1" || remoteIP == "localhost" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		addr, err := netip.ParseAddr(remoteIP)
+		if err == nil && dockerBridgePrefix.Contains(addr) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		if remoteIP != "127.0.0.1" && remoteIP != "::1" && remoteIP != "localhost" {
 			http.Error(w, `{"error":"forbidden: internal only"}`, http.StatusForbidden)
 			return
 		}
-		next.ServeHTTP(w, r)
 	})
 }
 
@@ -142,7 +155,7 @@ func LoopbackOnlyMiddleware(next http.Handler) http.Handler {
 func TracingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
-		
+
 		spanName := fmt.Sprintf("%s %s", r.Method, r.URL.Path)
 		ctx, span := tracer.Start(ctx, spanName,
 			trace.WithAttributes(
@@ -168,4 +181,3 @@ func TracingMiddleware(next http.Handler) http.Handler {
 		}
 	})
 }
-

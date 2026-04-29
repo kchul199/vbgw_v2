@@ -122,4 +122,84 @@ var (
 		Name: "vbgw_sip_registration_alarm",
 		Help: "PBX gateway registration alarm (0=ok, 1=alarm — unregistered 3+ min)",
 	})
+
+	RoutingConfigLoaded = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "vbgw_routing_config_loaded",
+		Help: "Routing configuration load status (1=loaded, 0=not loaded)",
+	})
+
+	RouteResolutionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "vbgw_route_resolution_total",
+		Help: "Dynamic dialplan route resolution results",
+	}, []string{"result"})
+
+	ServiceActiveCalls = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vbgw_service_active_calls",
+		Help: "Current active calls per logical service on this orchestrator node",
+	}, []string{"service"})
+
+	ServiceCapacityMax = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vbgw_service_capacity_max",
+		Help: "Configured max concurrent calls per logical service",
+	}, []string{"service"})
+
+	SlotInUse = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vbgw_slot_in_use",
+		Help: "Logical slot occupancy per service and slot",
+	}, []string{"service", "slot"})
+
+	SlotBackendAvailable = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vbgw_slot_backend_available",
+		Help: "Currently available slots per service and backend",
+	}, []string{"service", "backend"})
+
+	ExtensionRegistered = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vbgw_extension_registered",
+		Help: "Current SIP extension registration status (1=registered, 0=not)",
+	}, []string{"extension"})
+
+	OverflowTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "vbgw_overflow_total",
+		Help: "Total service overflow events by policy",
+	}, []string{"service", "policy"})
+
+	ServiceQueueDepth = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vbgw_service_queue_depth",
+		Help: "Current queued sessions per logical service",
+	}, []string{"service"})
+
+	QueueWaitSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vbgw_queue_wait_seconds",
+		Help: "Current oldest queue wait time in seconds per logical service",
+	}, []string{"service"})
+
+	HumanFallbackTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "vbgw_human_fallback_total",
+		Help: "Total human fallback transfers by service and target",
+	}, []string{"service", "target"})
+
+	QueueAbandonTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "vbgw_queue_abandon_total",
+		Help: "Total queued session removals by reason",
+	}, []string{"service", "reason"})
+
+	GatewayHealth = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vbgw_gateway_health",
+		Help: "Current gateway health class (1 for current class, 0 otherwise)",
+	}, []string{"gateway", "mode", "class"})
+
+	GatewayHealthAgeSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vbgw_gateway_health_age_seconds",
+		Help: "Age of the latest gateway health snapshot in seconds",
+	}, []string{"gateway"})
+
+	FailoverDecisionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "vbgw_failover_decisions_total",
+		Help: "Gateway selection decisions by reason and selected gateway",
+	}, []string{"reason", "selected_gateway"})
+
+	GatewayProbeFailuresTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "vbgw_gateway_probe_failures_total",
+		Help: "Total gateway probe failures by gateway",
+	}, []string{"gateway"})
 )

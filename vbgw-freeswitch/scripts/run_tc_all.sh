@@ -12,6 +12,7 @@ set -euo pipefail
 
 TARGET_IP="${1:-127.0.0.1}"
 ADMIN_KEY="${ADMIN_API_KEY:-changeme-admin-key}"
+AUTH_HEADER=(-H "Authorization: Bearer ${ADMIN_KEY}")
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RESULTS_DIR="${SCRIPT_DIR}/../results/tc_$(date +%Y%m%d_%H%M%S)"
 PASS_COUNT=0
@@ -43,7 +44,7 @@ fi
 
 # Verify active_calls returns to 0
 sleep 2
-ACTIVE=$(curl -s "http://${TARGET_IP}:8080/health" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('active_calls','-1'))" 2>/dev/null || echo "-1")
+ACTIVE=$(curl -s "${AUTH_HEADER[@]}" "http://${TARGET_IP}:8080/health" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('active_calls','-1'))" 2>/dev/null || echo "-1")
 if [ "${ACTIVE}" = "0" ]; then
     pass "active_calls = 0 after hangup"
 else
@@ -57,7 +58,7 @@ echo ""
 echo "--- TC-02: RTP Media Quality ---"
 
 # Check health endpoint is reachable
-HEALTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${TARGET_IP}:8080/health" 2>/dev/null || echo "000")
+HEALTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${AUTH_HEADER[@]}" "http://${TARGET_IP}:8080/health" 2>/dev/null || echo "000")
 if [ "${HEALTH_CODE}" = "200" ] || [ "${HEALTH_CODE}" = "503" ]; then
     pass "Health endpoint reachable (${HEALTH_CODE})"
 else
@@ -70,7 +71,7 @@ fi
 echo ""
 echo "--- TC-03: VAD + gRPC ---"
 
-METRICS=$(curl -s "http://${TARGET_IP}:8080/metrics" 2>/dev/null || echo "")
+METRICS=$(curl -s "${AUTH_HEADER[@]}" "http://${TARGET_IP}:8080/metrics" 2>/dev/null || echo "")
 if echo "${METRICS}" | grep -q "vbgw_vad_speech_events_total"; then
     pass "VAD metrics registered"
 else

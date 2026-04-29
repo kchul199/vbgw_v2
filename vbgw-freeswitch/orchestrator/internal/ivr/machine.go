@@ -21,7 +21,7 @@ import (
 type EventType int
 
 const (
-	DtmfEvent        EventType = iota
+	DtmfEvent EventType = iota
 	HangupEvent
 	ActivateMenuEvent
 )
@@ -46,19 +46,19 @@ const defaultInactivityTimeout = 5 * time.Minute
 
 // Scenario defines the entire IVR flow.
 type Scenario struct {
-	ID           string              `json:"id"`
-	InitialState string              `json:"initial_state"`
+	ID           string             `json:"id"`
+	InitialState string             `json:"initial_state"`
 	Nodes        map[string]IvrNode `json:"nodes"`
 }
 
 // IvrNode defines a single state's behavior and transitions.
 type IvrNode struct {
-	Prompt     string            `json:"prompt,omitempty"`
-	OnDtmf     map[string]string `json:"on_dtmf,omitempty"` // digit -> next_state
-	OnTimeout  string            `json:"on_timeout,omitempty"`
-	TimeoutMs  int               `json:"timeout_ms,omitempty"`
-	Action     string            `json:"action,omitempty"` // e.g., "START_AI", "TRANSFER", "DISCONNECT"
-	Target     string            `json:"target,omitempty"` // for transfer
+	Prompt    string            `json:"prompt,omitempty"`
+	OnDtmf    map[string]string `json:"on_dtmf,omitempty"` // digit -> next_state
+	OnTimeout string            `json:"on_timeout,omitempty"`
+	TimeoutMs int               `json:"timeout_ms,omitempty"`
+	Action    string            `json:"action,omitempty"` // e.g., "START_AI", "TRANSFER", "DISCONNECT"
+	Target    string            `json:"target,omitempty"` // for transfer
 }
 
 // Machine is a channel-based IVR FSM.

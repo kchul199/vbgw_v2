@@ -33,25 +33,37 @@ func AddWAVHeader(pcmData []byte) []byte {
 	return buf.Bytes()
 }
 
-// Resample24To16: OpenAI 24kHz PCM 데이터를 브릿지용 16kHz PCM으로 변환 (3:2 Downsampling)
+// Resample24To16: OpenAI 24kHz PCM 데이터를 브릿지용 16kHz PCM으로 변환 (3:2 Downsampling with Linear Interpolation)
 func Resample24To16(input []byte) []byte {
-	// 24kHz -> 16kHz 변환 (단순 선형 보간 또는 3샘플당 2샘플 추출)
-	// input은 16bit(2byte) 샘플들의 배열임
-	if len(input) < 2 {
+	if len(input) < 4 {
 		return input
 	}
 
-	samples := len(input) / 2
-	outputSamples := (samples * 2) / 3
-	output := make([]byte, outputSamples*2)
+	// 16-bit PCM (2 bytes per sample)
+	inSamples := len(input) / 2
+	outSamples := (inSamples * 2) / 3
+	output := make([]byte, outSamples*2)
 
-	for i := 0; i < outputSamples; i++ {
-		// 16kHz의 i번째 샘플은 24kHz의 (i * 1.5)번째 샘플에 해당함
-		idx24 := (i * 3) / 2
-		if (idx24*2 + 1) < len(input) {
-			output[i*2] = input[idx24*2]
-			output[i*2+1] = input[idx24*2+1]
+	for i := 0; i < outSamples; i++ {
+		// Calculate position in the input array (ratio 1.5)
+		pos := float64(i) * 1.5
+		idx := int(pos)
+		frac := pos - float64(idx)
+
+		if idx+1 >= inSamples {
+			// Last sample
+			output[i*2] = input[idx*2]
+			output[i*2+1] = input[idx*2+1]
+			continue
 		}
+
+		// Get two adjacent samples for interpolation
+		s1 := int16(binary.LittleEndian.Uint16(input[idx*2 : idx*2+2]))
+		s2 := int16(binary.LittleEndian.Uint16(input[(idx+1)*2 : (idx+1)*2+2]))
+
+		// Linear interpolation: s1 * (1-frac) + s2 * frac
+		res := int16(float64(s1)*(1.0-frac) + float64(s2)*frac)
+		binary.LittleEndian.PutUint16(output[i*2:i*2+2], uint16(res))
 	}
 
 	return output

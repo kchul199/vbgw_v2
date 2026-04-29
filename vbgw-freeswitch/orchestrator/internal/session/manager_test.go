@@ -217,22 +217,22 @@ func FuzzMemoryStore_Capacity(f *testing.F) {
 		if maxCapacity < 1 || maxCapacity > 1000 {
 			return
 		}
-		
+
 		ctx := context.Background()
 		m := NewMemoryStore(maxCapacity)
-		
+
 		var wg sync.WaitGroup
-		
+
 		// Concurrently spawn `addOps` additions and `relOps` releases
 		for i := 0; i < int(addOps); i++ {
 			wg.Add(1)
 			go func(iter int) {
 				defer wg.Done()
-				sid := string(rune('a' + iter%26)) + time.Now().String()
+				sid := string(rune('a'+iter%26)) + time.Now().String()
 				m.AddIfUnderCapacity(ctx, NewSession("n1", sid, "fs-"+sid, "", ""))
 			}(i)
 		}
-		
+
 		for i := 0; i < int(relOps); i++ {
 			wg.Add(1)
 			go func() {
@@ -241,9 +241,9 @@ func FuzzMemoryStore_Capacity(f *testing.F) {
 				m.Release(ctx, "nonexistent")
 			}()
 		}
-		
+
 		wg.Wait()
-		
+
 		// Ultimate validation: count never exceeds capacity
 		if m.Count(ctx) > maxCapacity {
 			t.Fatalf("Capacity breached! Max: %d, Current: %d", maxCapacity, m.Count(ctx))

@@ -3,6 +3,7 @@ package esl
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestNewClient(t *testing.T) {
@@ -68,6 +69,14 @@ func TestClient_ApiRespChBuffer(t *testing.T) {
 	}
 }
 
+func TestClient_EventChBuffer(t *testing.T) {
+	c := NewClient("127.0.0.1", 8021, "test", nil)
+
+	if cap(c.eventCh) != 256 {
+		t.Fatalf("expected eventCh cap=256, got %d", cap(c.eventCh))
+	}
+}
+
 func TestClient_ConnectWithRetry_ContextCancelled(t *testing.T) {
 	c := NewClient("127.0.0.1", 19999, "test", nil) // Non-existent server
 
@@ -111,6 +120,40 @@ func TestGetActiveChannelUUIDs_ParsesCSV(t *testing.T) {
 	}
 	if !uuids["def12345-1234-1234-1234-123456789012"] {
 		t.Fatal("expected second UUID")
+	}
+}
+
+func TestAPIResponsePayload_UsesBodyWhenPresent(t *testing.T) {
+	frame := "Content-Type: api/response\nContent-Length: 4\n\n+OK\n"
+	if got := apiResponsePayload(frame); got != "+OK" {
+		t.Fatalf("expected body payload '+OK', got %q", got)
+	}
+}
+
+func TestAPIResponsePayload_FallsBackToReplyText(t *testing.T) {
+	frame := "Content-Type: command/reply\nReply-Text: +OK Job-UUID: abc-123\n"
+	if got := apiResponsePayload(frame); got != "+OK Job-UUID: abc-123" {
+		t.Fatalf("expected Reply-Text payload, got %q", got)
+	}
+}
+
+func TestClient_DispatchLoop_InvokesHandler(t *testing.T) {
+	done := make(chan *Event, 1)
+	c := NewClient("127.0.0.1", 8021, "test", func(evt *Event) {
+		done <- evt
+	})
+	defer c.Close()
+
+	evt := &Event{Headers: map[string]string{"Event-Name": "CHANNEL_CREATE"}}
+	c.eventCh <- evt
+
+	select {
+	case got := <-done:
+		if got != evt {
+			t.Fatalf("expected dispatched event %p, got %p", evt, got)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected handler to receive dispatched event")
 	}
 }
 

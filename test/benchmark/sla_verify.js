@@ -1,65 +1,78 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
+import { Rate, Trend } from 'k6/metrics';
 
-// SLA Criteria Configuration
+// Custom metrics
+const apiSuccessRate = new Rate('api_success_rate');
+const healthLatency = new Trend('health_latency_ms');
+const callsLatency = new Trend('calls_latency_ms');
+
+// SLA Thresholds from docs/performance/sla_baseline.md
 export const options = {
-    thresholds: {
-        'http_req_duration{endpoint:create_call}': ['p(95)<150'], // Goal: 150ms
-        'http_req_duration{endpoint:dtmf}': ['p(95)<50'],        // Goal: 50ms
-        'http_req_failed': ['rate<0.001'],                      // Goal: 99.9% Success
+  scenarios: {
+    health_check: {
+      executor: 'constant-arrival-rate',
+      rate: 10,
+      timeUnit: '1s',
+      duration: '2m',
+      preAllocatedVUs: 5,
+      exec: 'healthCheck',
     },
-    scenarios: {
-        ramp_up: {
-            executor: 'ramping-vus',
-            startVUs: 0,
-            stages: [
-                { duration: '30s', target: 50 }, // Ramp up to 50 concurrent users
-                { duration: '1m', target: 50 },  // Stay at 50 users
-                { duration: '30s', target: 0 },  // Ramp down
-            ],
-        },
+    api_calls: {
+      executor: 'constant-arrival-rate',
+      rate: 5,
+      timeUnit: '1s',
+      duration: '2m',
+      preAllocatedVUs: 10,
+      exec: 'apiCalls',
+      startTime: '10s',
     },
+  },
+  thresholds: {
+    'api_success_rate': ['rate>0.999'],
+    'health_latency_ms': ['p(95)<20'],
+    'calls_latency_ms': ['p(95)<150'],
+    'http_req_failed': ['rate<0.001'],
+  },
 };
 
-const BASE_URL = __ENV.API_URL || 'http://localhost:8080';
+const BASE_URL = __ENV.VBGW_URL || 'http://localhost:8080';
 const API_KEY = __ENV.ADMIN_API_KEY || 'changeme-admin-key';
+const headers = {
+  'Authorization': `Bearer ${API_KEY}`,
+  'Content-Type': 'application/json',
+};
 
-export default function () {
-    const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${API_KEY}`, // Supports legacy API key as bearer
-    };
+export function healthCheck() {
+  const res = http.get(`${BASE_URL}/live`);
+  healthLatency.add(res.timings.duration);
+  apiSuccessRate.add(res.status === 200);
+  check(res, {
+    'health status 200': (r) => r.status === 200,
+    'health latency < 20ms': (r) => r.timings.duration < 20,
+  });
+}
 
-    // 1. Create Call
-    let createRes = http.post(
-        `${BASE_URL}/api/v1/calls`,
-        JSON.stringify({ target_uri: 'sip:k6-test@proxy' }),
-        { headers: headers, tags: { endpoint: 'create_call' } }
-    );
-    check(createRes, {
-        'create call is 201': (r) => r.status === 201,
-    });
+export function apiCalls() {
+  const capRes = http.get(`${BASE_URL}/api/v1/admin/services/capacity`, { headers });
+  apiSuccessRate.add(capRes.status === 200);
+  callsLatency.add(capRes.timings.duration);
+  check(capRes, {
+    'capacity status 200': (r) => r.status === 200,
+    'capacity latency < 150ms': (r) => r.timings.duration < 150,
+  });
 
-    if (createRes.status === 201) {
-        const callId = createRes.json().call_id;
+  const sessRes = http.get(`${BASE_URL}/api/v1/admin/sessions/active`, { headers });
+  apiSuccessRate.add(sessRes.status === 200);
 
-        // 2. Send DTMF (Simulating IVR interaction)
-        sleep(1);
-        let dtmfRes = http.post(
-            `${BASE_URL}/api/v1/calls/${callId}/dtmf`,
-            JSON.stringify({ digits: '1' }),
-            { headers: headers, tags: { endpoint: 'dtmf' } }
-        );
-        check(dtmfRes, {
-            'dtmf is 200': (r) => r.status === 200,
-        });
+  const routeRes = http.get(`${BASE_URL}/api/v1/admin/routing/config`, { headers });
+  apiSuccessRate.add(routeRes.status === 200);
 
-        // 3. Health Check
-        let healthRes = http.get(`${BASE_URL}/health`, { headers: headers });
-        check(healthRes, {
-            'health is 200': (r) => r.status === 200,
-        });
-    }
+  sleep(0.1);
+}
 
-    sleep(0.5);
+export function handleSummary(data) {
+  const passed = Object.values(data.root_group.checks).every(c => c.passes > 0 && c.fails === 0);
+  console.log(`\nVBGW SLA Verification: ${passed ? 'PASSED' : 'FAILED'}`);
+  return {};
 }

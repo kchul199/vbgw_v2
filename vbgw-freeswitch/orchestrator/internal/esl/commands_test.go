@@ -7,68 +7,21 @@ import (
 
 // TestOriginateCommandFormat tests the Originate command string generation.
 // We can't test SendBgAPI (needs TCP), but we can verify the command format.
-func TestOriginateCommandFormat_SingleGateway(t *testing.T) {
-	// Simulate the command string logic from Originate
-	uuid := "test-uuid-123"
-	target := "1001"
-	callerID := ""
-	useStandby := false
-
-	cidParam := ""
-	if callerID != "" {
-		cidParam = ",origination_caller_id_number=" + callerID + ",origination_caller_id_name=" + callerID
-	}
-
-	gateway := "sofia/gateway/pbx-main/" + target
-	if useStandby {
-		gateway += "|sofia/gateway/pbx-standby/" + target
-	}
-
-	cmd := "originate {origination_uuid=" + uuid + cidParam + ",failure_causes=NORMAL_TEMPORARY_FAILURE,originate_timeout=30}" + gateway + " &park()"
-
-	if !strings.Contains(cmd, "sofia/gateway/pbx-main/1001") {
-		t.Fatal("expected pbx-main gateway")
-	}
-	if strings.Contains(cmd, "pbx-standby") {
-		t.Fatal("should NOT contain pbx-standby when useStandby=false")
-	}
-	if !strings.Contains(cmd, "origination_uuid=test-uuid-123") {
-		t.Fatal("expected origination_uuid")
-	}
-	if strings.Contains(cmd, "origination_caller_id") {
-		t.Fatal("should NOT contain caller_id when empty")
+func TestBuildOutboundDialString_SingleGateway(t *testing.T) {
+	c := &Client{primaryGateway: "pbx-main", standbyGateway: "pbx-standby"}
+	got := c.buildOutboundDialString("1001", []string{"pbx-main"})
+	want := "sofia/gateway/pbx-main/1001"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
 
-func TestOriginateCommandFormat_WithStandbyAndCallerID(t *testing.T) {
-	uuid := "test-uuid-456"
-	target := "1002"
-	callerID := "02-1234-5678"
-	useStandby := true
-
-	cidParam := ""
-	if callerID != "" {
-		cidParam = ",origination_caller_id_number=" + callerID + ",origination_caller_id_name=" + callerID
-	}
-
-	gateway := "sofia/gateway/pbx-main/" + target
-	if useStandby {
-		gateway += "|sofia/gateway/pbx-standby/" + target
-	}
-
-	cmd := "originate {origination_uuid=" + uuid + cidParam + ",failure_causes=NORMAL_TEMPORARY_FAILURE,originate_timeout=30}" + gateway + " &park()"
-
-	if !strings.Contains(cmd, "pbx-main/1002") {
-		t.Fatal("expected pbx-main")
-	}
-	if !strings.Contains(cmd, "|sofia/gateway/pbx-standby/1002") {
-		t.Fatal("expected pipe-separated pbx-standby failover")
-	}
-	if !strings.Contains(cmd, "origination_caller_id_number=02-1234-5678") {
-		t.Fatal("expected caller_id_number")
-	}
-	if !strings.Contains(cmd, "origination_caller_id_name=02-1234-5678") {
-		t.Fatal("expected caller_id_name")
+func TestBuildOutboundDialString_WithStandby(t *testing.T) {
+	c := &Client{primaryGateway: "main-gw", standbyGateway: "backup-gw"}
+	got := c.buildOutboundDialString("1002", []string{"main-gw", "backup-gw"})
+	want := "sofia/gateway/main-gw/1002|sofia/gateway/backup-gw/1002"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
 

@@ -17,6 +17,7 @@ package vad
 import (
 	"log/slog"
 	"os"
+	"sync/atomic"
 
 	ort "github.com/yalue/onnxruntime_go"
 )
@@ -31,9 +32,10 @@ const (
 
 // Engine handles the shared ONNX model and environment.
 type Engine struct {
-	modelPath string
-	session   *ort.DynamicAdvancedSession
-	isV4      bool
+	modelPath       string
+	session         *ort.DynamicAdvancedSession
+	isV4            bool
+	runtimeFallback atomic.Bool
 }
 
 // Instance manages per-session VAD state (LSTM hidden states and buffers).
@@ -142,7 +144,7 @@ func (inst *Instance) Process(pcmBytes []byte) bool {
 		window := inst.buffer[:vadWindowSamples]
 		inst.buffer = inst.buffer[vadWindowSamples:]
 
-		if inst.engine.session != nil {
+		if inst.engine.session != nil && !inst.engine.runtimeFallback.Load() {
 			isSpeaking = inst.infer(window)
 		} else {
 			isSpeaking = energyDetectFallback(window)
@@ -163,8 +165,12 @@ func (inst *Instance) infer(samples []int16) bool {
 	}
 
 	// Propagate hidden states
-	copy(inst.h.GetData(), inst.hn.GetData())
-	copy(inst.c.GetData(), inst.cn.GetData())
+	if inst.h != nil && inst.hn != nil {
+		copy(inst.h.GetData(), inst.hn.GetData())
+	}
+	if inst.c != nil && inst.cn != nil {
+		copy(inst.c.GetData(), inst.cn.GetData())
+	}
 
 	// Run inference binding this instance's tensors
 	var inputs []ort.ArbitraryTensor
@@ -181,7 +187,9 @@ func (inst *Instance) infer(samples []int16) bool {
 	}
 
 	if err := inst.engine.session.Run(inputs, outputs); err != nil {
-		slog.Error("VAD inference failed", "err", err)
+		if !inst.engine.runtimeFallback.Swap(true) {
+			slog.Warn("VAD runtime incompatible, falling back to energy detector", "err", err)
+		}
 		return energyDetectFallback(samples)
 	}
 
@@ -190,13 +198,27 @@ func (inst *Instance) infer(samples []int16) bool {
 }
 
 func (inst *Instance) Close() {
-	if inst.input != nil { inst.input.Destroy() }
-	if inst.h != nil { inst.h.Destroy() }
-	if inst.c != nil { inst.c.Destroy() }
-	if inst.sr != nil { inst.sr.Destroy() }
-	if inst.output != nil { inst.output.Destroy() }
-	if inst.hn != nil { inst.hn.Destroy() }
-	if inst.cn != nil { inst.cn.Destroy() }
+	if inst.input != nil {
+		inst.input.Destroy()
+	}
+	if inst.h != nil {
+		inst.h.Destroy()
+	}
+	if inst.c != nil {
+		inst.c.Destroy()
+	}
+	if inst.sr != nil {
+		inst.sr.Destroy()
+	}
+	if inst.output != nil {
+		inst.output.Destroy()
+	}
+	if inst.hn != nil {
+		inst.hn.Destroy()
+	}
+	if inst.cn != nil {
+		inst.cn.Destroy()
+	}
 }
 
 func (e *Engine) Close() {
@@ -205,7 +227,6 @@ func (e *Engine) Close() {
 	}
 	ort.DestroyEnvironment()
 }
-
 
 // energyDetectFallback is used when ONNX load fails.
 func energyDetectFallback(samples []int16) bool {
@@ -220,7 +241,7 @@ func energyDetectFallback(samples []int16) bool {
 			sum += int64(s)
 		}
 	}
-	return sum/int64(len(samples)) > 800
+	return sum/int64(len(samples)) > 2000
 }
 
 func getOrtLibPath() string {

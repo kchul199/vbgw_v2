@@ -11,70 +11,84 @@ import (
 
 	"vbgw-orchestrator/internal/config"
 	"vbgw-orchestrator/internal/esl"
+	"vbgw-orchestrator/internal/interconnect"
 	"vbgw-orchestrator/internal/session"
 )
 
-// mockESL implements esl.Commander for E2E testing without a real FreeSWITCH.
-type mockESL struct {
-	originateCalled     int
-	sendDtmfCalled      int
-	transferCalled      int
-	recordStartCalled   int
-	recordStopCalled    int
-	breakCalled         int
-	lastTransferTarget  string
-	lastDtmfDigits      string
+// mockESLE2E implements esl.Commander for E2E testing without a real FreeSWITCH.
+type mockESLE2E struct {
+	originateCalled    int
+	sendDtmfCalled     int
+	transferCalled     int
+	recordStartCalled  int
+	recordStopCalled   int
+	breakCalled        int
+	lastTransferTarget string
+	lastDtmfDigits     string
 }
 
-func (m *mockESL) Originate(ctx context.Context, sessionID, target, callerID string, useStandby bool) (string, error) {
+func (m *mockESLE2E) Originate(ctx context.Context, sessionID, target, callerID string, gatewayOrder []string) (string, error) {
 	m.originateCalled++
 	return "+OK " + sessionID, nil
 }
-func (m *mockESL) SendDtmf(ctx context.Context, uuid, digits string) error {
+func (m *mockESLE2E) SendDtmf(ctx context.Context, uuid, digits string) error {
 	m.sendDtmfCalled++
 	m.lastDtmfDigits = digits
 	return nil
 }
-func (m *mockESL) Transfer(ctx context.Context, uuid, target string) error {
+func (m *mockESLE2E) SetVar(ctx context.Context, uuid, key, value string) error { return nil }
+func (m *mockESLE2E) Transfer(ctx context.Context, uuid, target string) error {
 	m.transferCalled++
 	m.lastTransferTarget = target
 	return nil
 }
-func (m *mockESL) RecordStart(ctx context.Context, uuid, path string) error {
+func (m *mockESLE2E) TransferViaGateway(ctx context.Context, uuid, target, gateway string) error {
+	m.transferCalled++
+	m.lastTransferTarget = gateway + ":" + target
+	return nil
+}
+func (m *mockESLE2E) RecordStart(ctx context.Context, uuid, path string) error {
 	m.recordStartCalled++
 	return nil
 }
-func (m *mockESL) RecordStop(ctx context.Context, uuid string) error {
+func (m *mockESLE2E) RecordStop(ctx context.Context, uuid string) error {
 	m.recordStopCalled++
 	return nil
 }
-func (m *mockESL) Bridge(ctx context.Context, uuid1, uuid2 string) error   { return nil }
-func (m *mockESL) Unbridge(ctx context.Context, uuid string) error          { return nil }
-func (m *mockESL) Kill(ctx context.Context, uuid string) error               { return nil }
-func (m *mockESL) Break(ctx context.Context, uuid string) error {
+func (m *mockESLE2E) Bridge(ctx context.Context, uuid1, uuid2 string) error { return nil }
+func (m *mockESLE2E) Unbridge(ctx context.Context, uuid string) error       { return nil }
+func (m *mockESLE2E) Kill(ctx context.Context, uuid string) error           { return nil }
+func (m *mockESLE2E) Break(ctx context.Context, uuid string) error {
 	m.breakCalled++
 	return nil
 }
-func (m *mockESL) Dump(ctx context.Context, uuid string) (map[string]string, error) { return nil, nil }
-func (m *mockESL) Pause(ctx context.Context) error                        { return nil }
-func (m *mockESL) Resume(ctx context.Context) error                       { return nil }
-func (m *mockESL) IsConnected() bool                                      { return true }
-func (m *mockESL) Eavesdrop(ctx context.Context, superUUID, targetUUID string) error { return nil }
-func (m *mockESL) ConferenceKick(ctx context.Context, confName, memberID string) error { return nil }
-func (m *mockESL) AttendedTransfer(ctx context.Context, uuid, target string) error   { return nil }
-func (m *mockESL) SendAPI(ctx context.Context, cmd string) (string, error)           { return "+OK", nil }
-func (m *mockESL) SendBgAPI(ctx context.Context, cmd string) (string, error)        { return "+OK", nil }
+func (m *mockESLE2E) Dump(ctx context.Context, uuid string) (map[string]string, error) {
+	return nil, nil
+}
+func (m *mockESLE2E) Pause(ctx context.Context) error  { return nil }
+func (m *mockESLE2E) Resume(ctx context.Context) error { return nil }
+func (m *mockESLE2E) IsConnected() bool                { return true }
+func (m *mockESLE2E) Eavesdrop(ctx context.Context, supervisorUUID, targetUUID string) error {
+	return nil
+}
+func (m *mockESLE2E) ConferenceKick(ctx context.Context, confName, memberID string) error { return nil }
+func (m *mockESLE2E) AttendedTransfer(ctx context.Context, uuid, target, gateway string) error {
+	return nil
+}
+func (m *mockESLE2E) SendAPI(ctx context.Context, cmd string) (string, error)   { return "+OK", nil }
+func (m *mockESLE2E) SendBgAPI(ctx context.Context, cmd string) (string, error) { return "+OK", nil }
 
 // TestE2E_FullCallLifecycle exercises the complete call lifecycle:
 // Create → DTMF → RecordStart → RecordStop → Transfer → Verify session cleanup.
 func TestE2E_FullCallLifecycle(t *testing.T) {
 	ctx := context.Background()
 	store := session.NewMemoryStore(100)
-	mock := &mockESL{}
+	mock := &mockESLE2E{}
 	cfg := &config.Config{
-		AdminAPIKey:    "test-key",
-		RateLimitRPS:   100,
-		RateLimitBurst: 200,
+		AdminAPIKey:            "test-key",
+		RateLimitRPS:           1000,
+		RateLimitBurst:         1000,
+		PBXInterconnectEnabled: true,
 	}
 
 	// Build router with mock ESL
@@ -209,5 +223,16 @@ func TestE2E_FullCallLifecycle(t *testing.T) {
 
 // buildTestRouter constructs a chi router with mock dependencies.
 func buildTestRouter(cfg *config.Config, eslMock esl.Commander, store session.Store) http.Handler {
-	return NewRouter(cfg, eslMock.(*mockESL), store, "test-node-id")
+	gatewayStore := interconnect.NewStore()
+	gatewaySelector := interconnect.NewSelector(gatewayStore, cfg.PBXMainGateway, cfg.PBXStandbyGateway, interconnect.SelectionPolicy{
+		PreferPrimary:     true,
+		AllowStandby:      cfg.PBXStandbyEnabled,
+		FailFastWhenStale: cfg.PBXFailFastOnStale,
+	})
+	handoffMgr := interconnect.NewHandoffManager()
+	router, err := NewRouter(cfg, nil, nil, nil, gatewayStore, gatewaySelector, handoffMgr, eslMock.(*mockESLE2E), store, "test-node-id")
+	if err != nil {
+		panic(err)
+	}
+	return router
 }

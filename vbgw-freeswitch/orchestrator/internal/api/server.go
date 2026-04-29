@@ -18,8 +18,12 @@ import (
 	"net/http/pprof"
 	"time"
 
+	"vbgw-orchestrator/internal/capacity"
 	"vbgw-orchestrator/internal/config"
 	"vbgw-orchestrator/internal/esl"
+	"vbgw-orchestrator/internal/interconnect"
+	"vbgw-orchestrator/internal/overflow"
+	"vbgw-orchestrator/internal/routing"
 	"vbgw-orchestrator/internal/session"
 
 	"github.com/go-chi/chi/v5"
@@ -27,7 +31,7 @@ import (
 )
 
 // NewRouter creates the HTTP router with all endpoints registered.
-func NewRouter(cfg *config.Config, eslClient *esl.Client, sessions session.Store, nodeID string) http.Handler {
+func NewRouter(cfg *config.Config, runtime *routing.Runtime, capacityMgr *capacity.Manager, overflowMgr *overflow.Manager, gatewayStore *interconnect.Store, gatewaySelector *interconnect.Selector, handoffMgr *interconnect.HandoffManager, eslClient esl.Commander, sessions session.Store, nodeID string) (http.Handler, error) {
 	r := chi.NewRouter()
 
 	bridgeURL := "http://" + cfg.BridgeHost + ":" + itoa(cfg.BridgeInternalPort)
@@ -35,21 +39,42 @@ func NewRouter(cfg *config.Config, eslClient *esl.Client, sessions session.Store
 
 	healthHandler := NewHealthHandler(eslClient, sessions, bridgeURL)
 	callsHandler := &CallsHandler{
-		ESL:          eslClient,
-		Sessions:     sessions,
-		UseStandbyGW: cfg.PBXStandbyHost != "",
-		NodeID:       nodeID,
+		ESL:                 eslClient,
+		Sessions:            sessions,
+		GatewaySelector:     gatewaySelector,
+		DefaultGatewayOrder: defaultGatewayOrder(cfg.PBXMainGateway, cfg.PBXStandbyGateway, cfg.PBXStandbyEnabled),
+		OutboundEnabled:     cfg.PBXInterconnectEnabled,
+		NodeID:              nodeID,
 	}
 	controlHandler := &ControlHandler{
-		ESL:        eslClient,
-		Sessions:   sessions,
-		BridgeURL:  bridgeURL,
-		httpClient: httpClient,
-		NodeID:     nodeID,
+		ESL:             eslClient,
+		Sessions:        sessions,
+		GatewaySelector: gatewaySelector,
+		HandoffManager:  handoffMgr,
+		OverflowManager: overflowMgr,
+		BridgeURL:       bridgeURL,
+		httpClient:      httpClient,
+		NodeID:          nodeID,
 	}
 	statsHandler := &StatsHandler{ESL: eslClient, Sessions: sessions}
-	dialplanHandler := &DialplanHandler{}
-	adminHandler := NewAdminHandler(sessions)
+	dialplanHandler := NewDialplanHandler(cfg.AIRouteNumbers, runtime, capacityMgr)
+	adminHandler := NewAdminHandler(sessions, capacityMgr, overflowMgr, gatewayStore, gatewaySelector, runtime)
+	baseMetricsHandler := promhttp.Handler()
+	metricsHandler := baseMetricsHandler
+	if gatewayStore != nil || capacityMgr != nil || overflowMgr != nil {
+		metricsHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if gatewayStore != nil {
+				gatewayStore.RefreshMetrics()
+			}
+			if capacityMgr != nil {
+				capacityMgr.RefreshMetrics()
+			}
+			if overflowMgr != nil {
+				overflowMgr.RefreshMetrics(time.Now())
+			}
+			baseMetricsHandler.ServeHTTP(w, r)
+		})
+	}
 
 	// Public health endpoints (no auth — liveness/readiness probes)
 	r.Get("/live", healthHandler.Live)
@@ -68,9 +93,15 @@ func NewRouter(cfg *config.Config, eslClient *esl.Client, sessions session.Store
 
 		// Admin Dashboard APIs
 		r.Get("/api/v1/admin/sessions/active", adminHandler.GetActiveSessions)
+		r.Get("/api/v1/admin/services/capacity", adminHandler.GetServiceCapacity)
+		r.Get("/api/v1/admin/slots", adminHandler.GetSlots)
+		r.Get("/api/v1/admin/queues", adminHandler.GetQueues)
+		r.Get("/api/v1/admin/gateways", adminHandler.GetGatewayHealth)
+		r.Get("/api/v1/admin/routing/config", adminHandler.GetRoutingConfig)
+		r.Post("/api/v1/admin/routing/reload", adminHandler.ReloadRoutingConfig)
 
 		// Prometheus metrics (behind auth to prevent info leak)
-		r.Handle("/metrics", promhttp.Handler())
+		r.Handle("/metrics", metricsHandler)
 
 		// E-05: POST /api/v1/calls
 		r.Post("/api/v1/calls", callsHandler.CreateCall)
@@ -127,7 +158,7 @@ func NewRouter(cfg *config.Config, eslClient *esl.Client, sessions session.Store
 		})
 	}
 
-	return r
+	return r, nil
 }
 
 func itoa(i int) string {

@@ -1,0 +1,85 @@
+version: 1
+
+defaults:
+  on_unknown_entry: static_fallback
+
+services:
+  - name: bot-main
+    enabled: true
+    route_type: ai
+    entry_numbers: ["1000", "5551212"]
+    match:
+      ingress_stages: ["default-policy"]
+      source_gateways: ["pbx-main", "pbx-standby"]
+    capacity:
+      backend: logical
+      max_concurrent: 10
+      allocator: round_robin
+      overflow_policy: busy
+
+  - name: vip-bot
+    enabled: true
+    route_type: ai
+    entry_numbers: ["2000"]
+    match:
+      ingress_stages: ["default-policy"]
+      source_gateways: ["pbx-main", "pbx-standby"]
+    capacity:
+      backend: logical
+      max_concurrent: 2
+      allocator: round_robin
+      overflow_policy: direct_transfer
+      transfer_target: "2100"
+
+  - name: bot-main-dev
+    enabled: true
+    route_type: ai
+    entry_numbers: ["9296"]
+    match:
+      ingress_stages: ["default-policy"]
+    capacity:
+      backend: logical
+      max_concurrent: 2
+      allocator: round_robin
+      overflow_policy: busy
+
+  - name: bot-queue-dev
+    enabled: true
+    route_type: ai
+    entry_numbers: ["9297"]
+    match:
+      ingress_stages: ["default-policy"]
+    capacity:
+      backend: logical
+      max_concurrent: 1
+      allocator: round_robin
+      overflow_policy: queue
+      queue_max_wait_seconds: 20
+      queue_announcement: "tone_stream://%(3000,1000,440,480)"
+      queue_on_timeout: busy
+
+  - name: bot-human-dev
+    enabled: true
+    route_type: ai
+    entry_numbers: ["9298"]
+    match:
+      ingress_stages: ["default-policy"]
+    capacity:
+      backend: logical
+      max_concurrent: 1
+      allocator: round_robin
+      overflow_policy: fallback_to_human
+      transfer_target: "callcenter:support@default"
+
+  - name: ext-pool-demo
+    enabled: true
+    route_type: ai
+    entry_numbers: ["9390"]
+    match:
+      ingress_stages: ["default-policy"]
+    capacity:
+      backend: sip_extension
+      allocator: priority
+      extensions: ["1001", "1002", "1003", "1004"]
+      require_registered: true
+      overflow_policy: busy

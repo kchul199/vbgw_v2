@@ -12,8 +12,8 @@ services:
     environment:
       - SIP_TLS_ONLY=true
       - SRTP_MODE=mandatory
-      # T-06: Enforce WSS for audio fork in production
-      - AUDIO_FORK_SCHEME=wss
+      # Current bridge runtime exposes plain WS only; terminate TLS at the edge until WSS support lands.
+      - AUDIO_FORK_SCHEME=ws
     deploy:
       resources:
         limits:
@@ -72,7 +72,8 @@ services:
 
   bridge:
     environment:
-      - AI_GRPC_TLS=true
+      # Current AI runtime is plain gRPC; enable TLS only after transport credentials are wired end-to-end.
+      - AI_GRPC_TLS=false
       - LOG_LEVEL=warn
     deploy:
       resources:

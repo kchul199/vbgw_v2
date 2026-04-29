@@ -26,6 +26,28 @@ bridge:
     repository: your-registry/vbgw-bridge
     tag: "latest"
 
+  # AI engine 의 gRPC endpoint. bridge 가 VoicebotAiService.StreamSession 호출.
+  #
+  # 두 가지 endpoint:
+  #   1) `ai-service:50051`                         — 자체 vbgw-ai (Go, go-openai)
+  #   2) `agentoe-backend.<ns>.svc.cluster.local:50051` — AgentOE backend (agentic + multi-tenant)
+  #
+  # cutover 절차: docs/cutover-vbgw-ai-to-backend.md (vbgw_v2)
+  #               + AgenticOE_v2/skeleton/docs/runbook/vbgw-ai-cutover.md (정합성)
+  grpcAiAddr: "ai-service:50051"
+  grpcAiTLS: false       # AgentOE backend insecure → false. mTLS 도입 시 true.
+
+  # ── Canary 배포 (vbgw-ai → backend cutover 용) ─────────────────────────
+  # 별도 Deployment 'bridge-canary' 를 띄워 일부 트래픽이 다른 endpoint 로.
+  # FreeSwitch mod_audio_fork 가 round-robin 으로 두 ReplicaSet 의 Pod 에 분배.
+  # → 비율 = canary.replicaCount / (replicaCount + canary.replicaCount)
+  #   예: replicaCount=9 + canary.replicaCount=1  → ~10% canary
+  canary:
+    enabled: false
+    replicaCount: 1
+    grpcAiAddr: "agentoe-backend.agentoe-staging.svc.cluster.local:50051"
+    grpcAiTLS: false
+
 freeswitch:
   replicaCount: 1
   image:

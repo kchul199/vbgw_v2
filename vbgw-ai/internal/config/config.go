@@ -13,13 +13,14 @@ type Config struct {
 	AiGrpcAddr   string
 
 	OpenAI struct {
-		APIKey     string
-		STTModel   string
-		LLMModel   string
-		TTSModel   string
-		TTSVoice   string
-		CushionMsg string
-		GreetingMsg string
+		APIKey       string
+		STTModel     string
+		LLMModel     string
+		TTSModel     string
+		TTSVoice     string
+		CushionMsg   string
+		GreetingMsg  string
+		SystemPrompt string
 	}
 }
 
@@ -44,6 +45,7 @@ func LoadConfig() {
 	AppConfig.OpenAI.TTSVoice = getEnv("OPENAI_TTS_VOICE", "alloy")
 	AppConfig.OpenAI.CushionMsg = getEnv("AI_CUSHION_MSG", "잠시만 기다려주세요...")
 	AppConfig.OpenAI.GreetingMsg = getEnv("AI_GREETING_MSG", "안녕하세요, 보이스봇입니다. 무엇을 도와드릴까요?")
+	AppConfig.OpenAI.SystemPrompt = getEnv("AI_SYSTEM_PROMPT", "당신은 지능형 음성봇 고객 응대 상담원입니다. 친절하고 간결하게 응답하세요.")
 
 	if AppConfig.OpenAI.APIKey == "" {
 		log.Println("WARNING: OPENAI_API_KEY is not set. Real AI features will fail.")

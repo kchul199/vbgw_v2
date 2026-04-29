@@ -67,10 +67,12 @@ func TestNewEngine_StubMode(t *testing.T) {
 func TestProcess_SilenceReturnsFalse(t *testing.T) {
 	e := NewEngine("/nonexistent/path/silero_vad.onnx")
 	defer e.Close()
+	inst := e.NewInstance()
+	defer inst.Close()
 
 	// 512 samples of silence (all zeros) = 1024 bytes
 	silence := make([]byte, 1024)
-	result := e.Process(silence)
+	result := inst.Process(silence)
 
 	if result {
 		t.Fatal("expected silence to return false (not speaking)")
@@ -80,6 +82,8 @@ func TestProcess_SilenceReturnsFalse(t *testing.T) {
 func TestProcess_LoudAudioReturnsTrue(t *testing.T) {
 	e := NewEngine("/nonexistent/path/silero_vad.onnx")
 	defer e.Close()
+	inst := e.NewInstance()
+	defer inst.Close()
 
 	// 512 samples of loud audio (amplitude > 800)
 	loud := make([]byte, 1024)
@@ -88,7 +92,7 @@ func TestProcess_LoudAudioReturnsTrue(t *testing.T) {
 		binary.LittleEndian.PutUint16(loud[i*2:], uint16(5000))
 	}
 
-	result := e.Process(loud)
+	result := inst.Process(loud)
 
 	if !result {
 		t.Fatal("expected loud audio to return true (speaking) in stub mode")
@@ -98,16 +102,18 @@ func TestProcess_LoudAudioReturnsTrue(t *testing.T) {
 func TestProcess_AccumulatesAcrossFrames(t *testing.T) {
 	e := NewEngine("/nonexistent/path/silero_vad.onnx")
 	defer e.Close()
+	inst := e.NewInstance()
+	defer inst.Close()
 
 	// Send 256 samples (half window) → should return false (not enough data)
 	half := make([]byte, 512) // 256 samples
-	result := e.Process(half)
+	result := inst.Process(half)
 	if result {
 		t.Fatal("expected false with only half window")
 	}
 
 	// Send another 256 samples → completes a full window
-	result = e.Process(half)
+	result = inst.Process(half)
 	// Result depends on content (silence → false)
 	_ = result // just verify no panic
 }

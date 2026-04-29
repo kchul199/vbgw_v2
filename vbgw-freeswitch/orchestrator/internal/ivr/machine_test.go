@@ -7,6 +7,45 @@ import (
 	"time"
 )
 
+const (
+	Idle       = "IDLE"
+	Menu       = "MENU"
+	AiChat     = "AICHAT"
+	Transfer   = "TRANSFER"
+	Disconnect = "DISCONNECT"
+)
+
+var defaultTestScenario = &Scenario{
+	InitialState: Menu,
+	Nodes: map[string]IvrNode{
+		Idle: {
+			OnDtmf: map[string]string{},
+		},
+		Menu: {
+			Action: "REPEAT_MENU",
+			OnDtmf: map[string]string{
+				"1": AiChat,
+				"0": Transfer,
+				"#": Disconnect,
+				"*": Menu,
+			},
+		},
+		AiChat: {
+			Action: "START_AI",
+			OnDtmf: map[string]string{
+				"0": Transfer,
+				"*": Menu,
+			},
+		},
+		Transfer: {
+			Action: "TRANSFER",
+		},
+		Disconnect: {
+			Action: "DISCONNECT",
+		},
+	},
+}
+
 // callbackTracker uses mutex for thread-safe access.
 type callbackTracker struct {
 	mu              sync.Mutex
@@ -15,30 +54,35 @@ type callbackTracker struct {
 	transferCount   int
 	disconnectCount int
 	forwardedDigits []string
-	lastState       chan State // receives state after each callback
+	lastState       chan string // receives state after each callback
 }
 
 func newTracker() *callbackTracker {
 	return &callbackTracker{
-		lastState: make(chan State, 32),
+		lastState: make(chan string, 32),
 	}
 }
 
 func (ct *callbackTracker) getMenuCount() int {
-	ct.mu.Lock(); defer ct.mu.Unlock(); return ct.menuCount
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	return ct.menuCount
 }
 func (ct *callbackTracker) getTransferCount() int {
-	ct.mu.Lock(); defer ct.mu.Unlock(); return ct.transferCount
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	return ct.transferCount
 }
 func (ct *callbackTracker) getForwardedDigits() []string {
-	ct.mu.Lock(); defer ct.mu.Unlock()
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
 	cp := make([]string, len(ct.forwardedDigits))
 	copy(cp, ct.forwardedDigits)
 	return cp
 }
 
 // waitState waits for a state notification from the callback or times out.
-func (ct *callbackTracker) waitState(timeout time.Duration) (State, bool) {
+func (ct *callbackTracker) waitState(timeout time.Duration) (string, bool) {
 	select {
 	case s := <-ct.lastState:
 		return s, true
@@ -49,7 +93,7 @@ func (ct *callbackTracker) waitState(timeout time.Duration) (State, bool) {
 
 func newTestMachine() (*Machine, *callbackTracker) {
 	tracker := newTracker()
-	m := NewMachine("test-session", Callbacks{
+	m := NewMachine("test-session", defaultTestScenario, Callbacks{
 		OnRepeatMenu: func() {
 			tracker.mu.Lock()
 			tracker.menuCount++
@@ -87,8 +131,9 @@ func newTestMachine() (*Machine, *callbackTracker) {
 
 func TestIVR_InitialState(t *testing.T) {
 	m, _ := newTestMachine()
-	if m.State() != Idle {
-		t.Fatalf("expected Idle, got %s", m.State())
+	// InitialState in defaultTestScenario is Menu, but before Run starts it's just initialized
+	if m.State() != Menu {
+		t.Fatalf("expected Menu as initial, got %s", m.State())
 	}
 }
 

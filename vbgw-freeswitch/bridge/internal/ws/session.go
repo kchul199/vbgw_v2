@@ -181,6 +181,13 @@ func (s *Session) vadGrpcLoop() {
 		return
 	}
 
+	// T-20: Send an initial metadata-only chunk to trigger AI greeting
+	if err := stream.Send(s.uuid, nil, false); err != nil {
+		slog.Error("Failed to send initial metadata chunk", "uuid", s.uuid, "err", err)
+	} else {
+		slog.Info("Sent initial metadata chunk to trigger greeting", "uuid", s.uuid)
+	}
+
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -197,9 +204,9 @@ func (s *Session) vadGrpcLoop() {
 			// VAD inference
 			isSpeaking := s.vadInstance.Process(pcm)
 
-			// Send to AI via gRPC
+			// Send to AI via gRPC (always include session ID for reliability)
 			err := stream.Send(s.uuid, pcm, isSpeaking)
-			
+
 			// ALWAYS return buffer to pool after processing/sending
 			s.bufferPool.Put(pcm)
 
@@ -267,11 +274,13 @@ func (s *Session) txLoop() {
 				continue
 			}
 
+			// T-21: mod_audio_fork expects raw binary frames for playout injection.
 			if err := s.conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
-				slog.Error("WS write error", "uuid", s.uuid, "err", err)
+				slog.Error("WS write error (binary)", "uuid", s.uuid, "err", err)
 				s.cancel()
 				return
 			}
+			slog.Debug("Sent binary audio frame to FreeSWITCH", "uuid", s.uuid, "size", len(frame))
 		}
 	}
 }

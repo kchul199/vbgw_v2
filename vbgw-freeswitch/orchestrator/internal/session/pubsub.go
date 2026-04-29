@@ -27,7 +27,7 @@ func (rs *RedisStore) PublishCommand(ctx context.Context, targetNodeID, sessionI
 		Payload:   data,
 	}
 	body, _ := json.Marshal(msg)
-	
+
 	channel := "vbgw:node:" + targetNodeID + ":cmds"
 	return rs.client.Publish(ctx, channel, body).Err()
 }
@@ -38,7 +38,7 @@ func (rs *RedisStore) SubscribeCommands(ctx context.Context, handler func(msg Co
 	channel := "vbgw:node:" + rs.nodeID + ":cmds"
 	pubsub := rs.client.Subscribe(ctx, channel)
 	defer pubsub.Close()
-	
+
 	ch := pubsub.Channel()
 	slog.Info("Subscribed to node command channel", "channel", channel)
 

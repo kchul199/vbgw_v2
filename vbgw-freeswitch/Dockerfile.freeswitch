@@ -1,0 +1,45 @@
+FROM drachtio/drachtio-freeswitch-mrf:latest AS builder
+
+ARG FS_VERSION=v1.10.10
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    pkg-config \
+    libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp
+
+RUN git clone --depth 1 --branch "${FS_VERSION}" https://github.com/signalwire/freeswitch.git /tmp/freeswitch
+
+RUN gcc -fPIC -shared \
+    -o /tmp/mod_xml_curl.so \
+    /tmp/freeswitch/src/mod/xml_int/mod_xml_curl/mod_xml_curl.c \
+    -I/usr/local/freeswitch/include/freeswitch \
+    -L/usr/local/freeswitch/lib \
+    -lfreeswitch \
+    $(pkg-config --cflags --libs libcurl)
+
+RUN gcc -fPIC -shared \
+    -o /tmp/mod_callcenter.so \
+    /tmp/freeswitch/src/mod/applications/mod_callcenter/mod_callcenter.c \
+    -I/usr/local/freeswitch/include/freeswitch \
+    -L/usr/local/freeswitch/lib \
+    -lfreeswitch
+
+RUN gcc -fPIC -shared \
+    -o /tmp/mod_loopback.so \
+    /tmp/freeswitch/src/mod/endpoints/mod_loopback/mod_loopback.c \
+    -I/usr/local/freeswitch/include/freeswitch \
+    -L/usr/local/freeswitch/lib \
+    -lfreeswitch
+
+FROM drachtio/drachtio-freeswitch-mrf:latest
+
+COPY --from=builder /tmp/mod_xml_curl.so /usr/local/freeswitch/mod/mod_xml_curl.so
+COPY --from=builder /tmp/mod_callcenter.so /usr/local/freeswitch/mod/mod_callcenter.so
+COPY --from=builder /tmp/mod_loopback.so /usr/local/freeswitch/mod/mod_loopback.so
+COPY scripts/freeswitch-entrypoint.sh /usr/local/bin/freeswitch-entrypoint.sh
+
+RUN chmod +x /usr/local/bin/freeswitch-entrypoint.sh

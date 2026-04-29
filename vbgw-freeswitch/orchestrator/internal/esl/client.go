@@ -18,6 +18,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,9 @@ type Client struct {
 	port     int
 	password string
 
+	primaryGateway string
+	standbyGateway string
+
 	conn    net.Conn
 	reader  *bufio.Reader
 	mu      sync.Mutex // protects conn writes + API request serialization
@@ -47,24 +51,40 @@ type Client struct {
 	// Q-04: API response channel — eventLoop routes api/response here
 	// T-02: Expanded buffer to prevent response drop under reconnect race
 	apiRespCh chan string
+	eventCh   chan *Event
 
-	connected     bool
-	onReconnect   func() // called after successful reconnection
-	ctx           context.Context
-	cancel        context.CancelFunc
+	connected   bool
+	onReconnect func() // called after successful reconnection
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // NewClient creates a new ESL client (not yet connected).
 func NewClient(host string, port int, password string, handler EventHandler) *Client {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Client{
-		host:      host,
-		port:      port,
-		password:  password,
-		apiRespCh: make(chan string, 16),
-		handler:  handler,
-		ctx:      ctx,
-		cancel:   cancel,
+	c := &Client{
+		host:           host,
+		port:           port,
+		password:       password,
+		primaryGateway: "pbx-main",
+		standbyGateway: "pbx-standby",
+		apiRespCh:      make(chan string, 16),
+		eventCh:        make(chan *Event, 256),
+		handler:        handler,
+		ctx:            ctx,
+		cancel:         cancel,
+	}
+	go c.dispatchLoop()
+	return c
+}
+
+// SetPBXGateways overrides the logical gateway names used for outbound interconnect.
+func (c *Client) SetPBXGateways(primary, standby string) {
+	if primary != "" {
+		c.primaryGateway = primary
+	}
+	if standby != "" {
+		c.standbyGateway = standby
 	}
 }
 
@@ -77,7 +97,7 @@ func (c *Client) Connect() error {
 		c.conn = nil
 	}
 
-	addr := fmt.Sprintf("%s:%d", c.host, c.port)
+	addr := net.JoinHostPort(c.host, strconv.Itoa(c.port))
 	slog.Info("ESL connecting", "addr", addr)
 
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
@@ -173,7 +193,7 @@ func (c *Client) IsConnected() bool {
 // GetActiveChannelUUIDs queries FS for all active channel UUIDs.
 // Used after reconnection to reconcile orphan sessions.
 func (c *Client) GetActiveChannelUUIDs() (map[string]bool, error) {
-	resp, err := c.SendAPI("show channels")
+	resp, err := c.SendAPI(context.Background(), "show channels")
 	if err != nil {
 		return nil, err
 	}
@@ -301,24 +321,66 @@ func (c *Client) eventLoop() {
 		// Q-04: Route API responses to apiRespCh instead of event handler
 		if strings.Contains(data, "Content-Type: api/response") ||
 			strings.Contains(data, "Content-Type: command/reply") {
-			// Extract body (after double newline)
-			body := ""
-			if idx := strings.Index(data, "\n\n"); idx >= 0 {
-				body = data[idx+2:]
-			}
+			resp := apiResponsePayload(data)
 			select {
-			case c.apiRespCh <- body:
+			case c.apiRespCh <- resp:
 			default:
 				slog.Error("ESL apiRespCh full, dropping API response — possible concurrent API call leak")
 			}
 			continue
 		}
 
-		evt := ParseEvent(data)
+		evt := ParseEvent(eventPayload(data))
 		if evt.Name() != "" && c.handler != nil {
+			select {
+			case c.eventCh <- evt:
+			case <-c.ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+func (c *Client) dispatchLoop() {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case evt := <-c.eventCh:
+			if evt == nil || c.handler == nil {
+				continue
+			}
 			c.handler(evt)
 		}
 	}
+}
+
+func apiResponsePayload(data string) string {
+	if idx := strings.Index(data, "\n\n"); idx >= 0 {
+		body := strings.TrimSpace(data[idx+2:])
+		if body != "" {
+			return body
+		}
+	}
+
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Reply-Text: ") {
+			return strings.TrimPrefix(line, "Reply-Text: ")
+		}
+	}
+
+	return ""
+}
+
+func eventPayload(data string) string {
+	if idx := strings.Index(data, "\n\n"); idx >= 0 {
+		contentTypeBlock := data[:idx]
+		if strings.Contains(contentTypeBlock, "Content-Type: text/event-plain") {
+			return data[idx+2:]
+		}
+	}
+	return data
 }
 
 // autoReconnect attempts to re-establish the ESL connection with backoff.

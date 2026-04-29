@@ -10,6 +10,7 @@ func TestLoad_Defaults(t *testing.T) {
 	os.Unsetenv("ESL_HOST")
 	os.Unsetenv("HTTP_PORT")
 	os.Unsetenv("MAX_SESSIONS")
+	os.Unsetenv("ROUTING_CONFIG_PATH")
 
 	cfg := Load()
 
@@ -25,6 +26,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.MaxSessions != 100 {
 		t.Fatalf("expected MAX_SESSIONS=100, got %d", cfg.MaxSessions)
 	}
+	if cfg.RoutingConfigPath != "/app/config/routing.yaml" {
+		t.Fatalf("expected default routing path, got %s", cfg.RoutingConfigPath)
+	}
 	if cfg.RecordingEnable {
 		t.Fatal("expected RECORDING_ENABLE=false")
 	}
@@ -34,10 +38,12 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	os.Setenv("HTTP_PORT", "9090")
 	os.Setenv("MAX_SESSIONS", "50")
 	os.Setenv("RECORDING_ENABLE", "true")
+	os.Setenv("ROUTING_CONFIG_PATH", "/tmp/routing.yaml")
 	defer func() {
 		os.Unsetenv("HTTP_PORT")
 		os.Unsetenv("MAX_SESSIONS")
 		os.Unsetenv("RECORDING_ENABLE")
+		os.Unsetenv("ROUTING_CONFIG_PATH")
 	}()
 
 	cfg := Load()
@@ -50,6 +56,9 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	}
 	if !cfg.RecordingEnable {
 		t.Fatal("expected RECORDING_ENABLE=true")
+	}
+	if cfg.RoutingConfigPath != "/tmp/routing.yaml" {
+		t.Fatalf("expected ROUTING_CONFIG_PATH override, got %s", cfg.RoutingConfigPath)
 	}
 }
 

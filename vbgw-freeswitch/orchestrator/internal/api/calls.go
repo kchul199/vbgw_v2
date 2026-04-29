@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"vbgw-orchestrator/internal/esl"
+	"vbgw-orchestrator/internal/interconnect"
 	"vbgw-orchestrator/internal/metrics"
 	"vbgw-orchestrator/internal/session"
 
@@ -25,10 +26,12 @@ import (
 
 // CallsHandler handles origination of outbound calls.
 type CallsHandler struct {
-	ESL          esl.Commander
-	Sessions     session.Store
-	UseStandbyGW bool
-	NodeID       string
+	ESL                 esl.Commander
+	Sessions            session.Store
+	GatewaySelector     *interconnect.Selector
+	DefaultGatewayOrder []string
+	OutboundEnabled     bool
+	NodeID              string
 }
 
 type createCallRequest struct {
@@ -55,6 +58,10 @@ func (h *CallsHandler) CreateCall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"target_uri is required"}`, http.StatusBadRequest)
 		return
 	}
+	if !h.OutboundEnabled {
+		http.Error(w, `{"error":"pbx interconnect disabled"}`, http.StatusServiceUnavailable)
+		return
+	}
 
 	// Atomic capacity check + session creation
 	sessionID := uuid.New().String()
@@ -69,8 +76,21 @@ func (h *CallsHandler) CreateCall(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("Creating outbound call", "session_id", sessionID, "target_masked", maskURI(req.TargetURI))
 
-	// ESL originate (background API) — P-07: with Caller-ID, Q-03: conditional standby
-	_, err := h.ESL.Originate(ctx, sessionID, req.TargetURI, req.CallerID, h.UseStandbyGW)
+	gatewayOrder := append([]string(nil), h.DefaultGatewayOrder...)
+	if h.GatewaySelector != nil {
+		selection, err := h.GatewaySelector.SelectOriginate()
+		if err != nil {
+			h.Sessions.Release(ctx, sessionID)
+			slog.Error("Gateway selection failed", "err", err)
+			http.Error(w, `{"error":"no healthy gateway available"}`, http.StatusServiceUnavailable)
+			return
+		}
+		gatewayOrder = append([]string(nil), selection.GatewayOrder...)
+		slog.Info("Selected outbound gateway order", "session_id", sessionID, "gateway_order", gatewayOrder, "reason", selection.Reason)
+	}
+
+	// ESL originate (background API) — P-07: with Caller-ID, Phase 3: health-aware gateway selection
+	_, err := h.ESL.Originate(ctx, sessionID, req.TargetURI, req.CallerID, gatewayOrder)
 	if err != nil {
 		h.Sessions.Release(ctx, sessionID)
 		slog.Error("ESL originate failed", "err", err)
@@ -85,6 +105,19 @@ func (h *CallsHandler) CreateCall(w http.ResponseWriter, r *http.Request) {
 		CallID: sessionID,
 		Status: "initiating",
 	})
+}
+
+func defaultGatewayOrder(primaryGateway, standbyGateway string, allowStandby bool) []string {
+	order := []string{}
+	if primary := strings.TrimSpace(primaryGateway); primary != "" {
+		order = append(order, primary)
+	}
+	if allowStandby {
+		if standby := strings.TrimSpace(standbyGateway); standby != "" && standby != primaryGateway {
+			order = append(order, standby)
+		}
+	}
+	return order
 }
 
 // maskURI masks a SIP URI for PII protection in logs.

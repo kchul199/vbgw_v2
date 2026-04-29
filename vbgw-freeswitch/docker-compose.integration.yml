@@ -1,0 +1,40 @@
+# ──────────────────────────────────────────────────────────────────────────
+# Cross-project integration override — bridge → AgentOE backend
+#
+# canonical 사용 가이드: ~/AgenticOE_v2/skeleton/docker-compose.integration.yml
+#
+# 사용:
+#   docker network create agentoe-vbgw-bridge || true
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.integration.yml up -d
+#
+# 효과:
+#   - bridge container 가 vbgw-net + integration-bridge 둘 다 join
+#   - bridge 의 AI_GRPC_ADDR 이 vbgw-ai 가 아닌 AgentOE backend 로 redirect
+#   - 기존 vbgw-ai 컨테이너는 띄우지 않음 (롤백 시 다시 띄우면 됨)
+# ──────────────────────────────────────────────────────────────────────────
+version: "3.9"
+
+services:
+  bridge:
+    environment:
+      # ★ 핵심 — vbgw-ai 가 아닌 AgentOE backend 로 redirect.
+      # `agentoe-api` 는 AgenticOE_v2 의 docker-compose.yml 의 service name.
+      # 두 컨테이너가 공유 network 'integration-bridge' (host alias=agentoe-vbgw-bridge) 로 도달.
+      - AI_GRPC_ADDR=agentoe-api:50051
+      - AI_GRPC_TLS=false
+      - BRIDGE_TRACK=integration-test
+    networks:
+      - vbgw-net
+      - integration-bridge
+
+  # vbgw-ai 는 통합 테스트 시 비활성. 롤백 검증 시엔 이 override 빼고 다시 up.
+  # (compose 의 'override 로 service 제거' 는 직접 안 됨 — 사용자가 vbgw-ai 만 stop)
+  vbgw-ai:
+    profiles:
+      - disabled-for-integration   # 기본 profile 에 미포함 → 안 띄움
+
+networks:
+  integration-bridge:
+    external: true
+    name: agentoe-vbgw-bridge

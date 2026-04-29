@@ -1,212 +1,218 @@
-# CLAUDE.md — VoiceBot Gateway (vbgw)
+# CLAUDE.md — VoiceBot Gateway (vbgw_v2)
 
-> 이 파일은 Claude Code가 매 대화 시작 시 자동으로 읽는 프로젝트 지시서입니다.
+> 이 파일은 매 세션 시작 시 자동으로 읽히는 프로젝트 지시서.
+> 마지막 갱신: 2026-04-26 — 실 아키텍처 (Go + FreeSwitch) 반영. 옛 C++ / PJSIP 내용은 `legacy/` 에 보존.
 
 ---
 
 ## 1. 프로젝트 개요
 
-**VoiceBot Gateway (vbgw)** — AI 콜봇 인프라의 핵심 통화 제어 및 미디어 게이트웨이
+**VoiceBot Gateway (vbgw)** — AI 콜봇 인프라의 핵심 통화 제어 및 미디어 게이트웨이.
 
 | 항목 | 내용 |
 |------|------|
-| 역할 | PBX/SBC로부터 SIP 전화를 수신하여 AI 엔진(STT/TTS/NLU)과 실시간 음성 스트리밍 중계 |
-| 언어 | C++20 |
-| 빌드 | CMake 3.15+ / Ninja |
-| 핵심 라이브러리 | PJSIP, Boost.Asio, gRPC, protobuf, ONNX Runtime, SpeexDSP, spdlog, OpenSSL |
-| 프로토콜 | SIP (시그널링), RTP/G.711 (미디어), gRPC Bi-directional Streaming (AI 연동) |
-| VAD 모델 | Silero VAD v4 (models/silero_vad.onnx) |
+| 역할 | PBX/SBC 의 SIP/RTP → FreeSwitch → orchestrator/bridge → AI gRPC 서비스 |
+| 언어 | **Go 1.23** (orchestrator + bridge + ai engine), C/Lua (FreeSwitch dialplan) |
+| 빌드 | Go modules + Docker (component 별 Dockerfile) |
+| 핵심 라이브러리 | grpc-go, gorilla/websocket, ONNX Runtime Go, sashabaranov/go-openai |
+| 프로토콜 | SIP/RTP (FS), WebSocket (FS↔bridge), gRPC bidi stream (bridge↔AI), ESL (FS↔orchestrator), HTTP REST (admin) |
+| VAD 모델 | Silero VAD v4 (ONNX Runtime Go) |
+| 세션 상태 | Redis (Lua atomic) + 로컬 fallback |
+
+**관련 프로젝트:** `~/AgenticOE_v2/` (Python FastAPI backend) — proto contract owner. cross-project 통합은 그쪽 `skeleton/docs/guide/cross-project-integration.md` 참고.
 
 ---
 
-## 2. 디렉토리 구조
+## 2. 디렉토리 구조 (실제)
 
 ```
-vbgw/
-├── src/
-│   ├── main.cpp                    # 진입점, 설정 로드, PJSIP 초기화
-│   ├── engine/                     # SIP/미디어 핵심 엔진
-│   │   ├── VoicebotEndpoint.cpp/h  # PJSIP UA — SIP 등록/인증/라우팅
-│   │   ├── VoicebotAccount.cpp/h   # SIP 계정 관리
-│   │   ├── VoicebotCall.cpp/h      # 콜 세션 오케스트레이터 (핵심)
-│   │   ├── VoicebotMediaPort.cpp/h # RTP 수신·VAD·gRPC 송신 파이프라인
-│   │   └── SessionManager.h        # 동시 호 수 관리 (Max 100)
-│   ├── ai/
-│   │   ├── VoicebotAiClient.cpp/h  # gRPC Bi-dir 스트리밍 클라이언트
-│   │   └── SileroVad.cpp/h         # ONNX Runtime 기반 VAD 추론
-│   ├── utils/
-│   │   └── RingBuffer.h            # Zero-copy lock-free 링버퍼
-│   └── emulator/                   # Python AI 서버 목 (테스트용)
-│       ├── mock_server.py          # gRPC 목 서버
-│       └── emulator.py             # SIP 콜 에뮬레이터
-├── protos/
-│   └── voicebot.proto              # gRPC 인터페이스 정의 (원본)
-├── models/
-│   └── silero_vad.onnx             # VAD 모델 (바이너리, 수정 금지)
-├── config/                         # 런타임 설정 (환경별)
-├── docs/
-│   ├── architecture.md             # 시스템 아키텍처 설계서
-│   ├── api_spec.md                 # gRPC API 명세
-│   └── troubleshooting.md         # 운영 트러블슈팅 가이드
-├── build/                          # CMake 빌드 산출물 (무시)
-└── .claude/
-    ├── agents/                     # 페르소나 에이전트 10개
-    └── commands/                   # 커스텀 슬래시 커맨드
-```
-
----
-
-## 3. 빌드 및 실행 명령어
-
-### 빌드
-```bash
-# 처음 설정 (빌드 디렉토리 생성)
-cmake -S . -B build -G Ninja
-
-# 빌드 실행
-cmake --build build
-
-# 또는 직접
-cd build && ninja
-```
-
-### 실행
-```bash
-./build/vbgw
-```
-
-### Emulator (테스트용 Python AI 목 서버)
-```bash
-# 목 gRPC AI 서버 실행
-cd src/emulator && python mock_server.py
-
-# SIP 콜 에뮬레이터 실행
-cd src/emulator && python emulator.py
-```
-
-### Protobuf 재생성 (proto 파일 변경 시)
-```bash
-# CMake가 자동 처리 — 빌드 시 build/generated/ 에 생성됨
-cmake --build build
+vbgw_v2/
+├── README.md, CHANGELOG.md, AGENTS.md, GEMINI.md
+├── CLAUDE.md                       # 이 파일
+├── run_local.sh                    # 로컬 dev 부트
+├── charts/vbgw/                    # 통합 Helm chart
+│   ├── Chart.yaml, values.yaml
+│   └── templates/
+│       ├── deployment-orchestrator.yaml
+│       ├── deployment-bridge.yaml      # canary block 추가됨 (2026-04-26)
+│       ├── deployment-freeswitch.yaml
+│       ├── ingress.yaml
+│       ├── _helpers.tpl, NOTES.txt
+├── docs/performance/sla_baseline.md
+├── vbgw-ai/                        # AI engine (Go)
+│   ├── cmd/main.go                 # gRPC server 진입점 (port 50051)
+│   ├── internal/ai/{server,engine,openai,utils}.go
+│   ├── internal/config/config.go
+│   ├── proto/voicebot.proto        # ★ DUPLICATED — canonical 은 AgenticOE_v2
+│   ├── proto/voicebot/voicebot{.pb.go,_grpc.pb.go}
+│   └── Dockerfile
+├── vbgw-freeswitch/                # FS + orchestrator + bridge
+│   ├── Dockerfile.builder, Dockerfile.freeswitch
+│   ├── docker-compose.yml, docker-compose.{prod,canary}.yml
+│   ├── Makefile
+│   ├── config/                     # FS dialplan, vars
+│   ├── models/                     # silero_vad.onnx
+│   ├── nginx/                      # 옵션 reverse proxy
+│   ├── scripts/                    # 운영 스크립트
+│   ├── orchestrator/
+│   │   ├── cmd/{main,pbx_health}.go
+│   │   ├── internal/{esl,recording,metrics,config}/
+│   │   └── go.mod
+│   ├── bridge/
+│   │   ├── cmd/main.go             # WS↔gRPC bridge
+│   │   ├── internal/
+│   │   │   ├── grpc/{client,retry}.go    # AI 엔진 gRPC client
+│   │   │   ├── tts/buffer.go             # TTS 출력 버퍼링
+│   │   │   ├── barge/controller.go        # Barge-in 처리
+│   │   │   ├── vad/silero.go             # Silero VAD
+│   │   │   └── config/config.go          # ★ env: AI_GRPC_ADDR (GRPC_AI_ADDR 아님!)
+│   │   ├── proto/voicebot/voicebot{.pb.go,_grpc.pb.go}
+│   │   └── Dockerfile
+│   ├── protos/voicebot.proto       # ★ DUPLICATED
+│   ├── docs/                       # 컴포넌트 별 운영 문서
+│   ├── tests/, recordings/, redis_data/
+└── legacy/                         # 옛 C++ / PJSIP 구현 (참조만 — 빌드 안 함)
+    ├── src/, protos/, history/development_history.md
+    └── docs/freeswitch_migration_*  # 왜 Go+FS 로 옮겼는지 사유 기록
 ```
 
 ---
 
-## 4. 핵심 데이터 흐름
+## 3. 런타임 데이터 흐름
 
+```text
+PBX/SBC ──SIP/RTP──▶ FreeSwitch
+                       │
+                       ├─ ESL ──▶ Orchestrator (Go, REST :8080)
+                       │           ├─ Redis (Lua atomic 세션 상태)
+                       │           └─ Admin Dashboard (JWT, REST API)
+                       │
+                       └─ WebSocket(audio_fork) ──▶ Bridge (Go)
+                                                     │
+                                                     │ gRPC StreamSession (VoicebotAiService)
+                                                     │ env AI_GRPC_ADDR
+                                                     │
+                                                     ▼
+                                        ┌────────────────────────┐
+                                        │ AI Engine endpoint:    │
+                                        │  · vbgw-ai (자체)       │
+                                        │  · agentoe-backend (★) │
+                                        └────────────────────────┘
 ```
-PBX/SBC
-  │ SIP INVITE
-  ▼
-VoicebotEndpoint → VoicebotAccount → VoicebotCall (오케스트레이터)
-                                           │
-                                           ▼
-                                    VoicebotMediaPort
-                                    ┌─────────────────────────────────┐
-                                    │ RTP G.711 수신 (8kHz)           │
-                                    │ → SpeexDSP 리샘플링 (16kHz)     │
-                                    │ → SileroVAD 추론 (512샘플/32ms) │
-                                    │ → AudioChunk 조립               │
-                                    └──────────────┬──────────────────┘
-                                                   │ gRPC Bi-dir Stream
-                                                   ▼
-                                          VoicebotAiClient
-                                          (STT/TTS/NLU 서버)
-                                                   │ AiResponse
-                                                   ▼
-                                    RingBuffer → RTP 인코딩 → PBX 송출
+
+**★ AgentOE backend 도 동일 gRPC contract (`voicebot.ai.VoicebotAiService`) 구현 (2026-04-26).** Bridge 가 어느 endpoint 호출하느냐는 `bridge.grpcAiAddr` (Helm) → `AI_GRPC_ADDR` (env) 로 결정.
+
+cutover 절차: AgenticOE_v2 의 `skeleton/docs/runbook/vbgw-ai-cutover.md`.
+
+---
+
+## 4. 빌드 및 실행
+
+### 로컬 (docker-compose)
+```bash
+cd vbgw-freeswitch
+cp .env.example .env
+docker-compose up -d
+# FS, orchestrator, bridge, vbgw-ai, redis 모두 기동
+```
+
+### 컴포넌트 단독 빌드
+```bash
+# AI engine
+cd vbgw-ai && go build -o ./ai_engine ./cmd
+
+# Orchestrator
+cd vbgw-freeswitch/orchestrator && go build -o ./orch_app ./cmd
+
+# Bridge
+cd vbgw-freeswitch/bridge && go build -o ./bridge ./cmd
+```
+
+### Proto stub 재생성 — **AgenticOE_v2 가 owner**
+```bash
+# AgenticOE_v2 에서 sync
+cd ~/AgenticOE_v2/skeleton/contracts
+make sync-vbgw VBGW=$HOME/vbgw_v2
+
+# vbgw_v2 측에서 Go stub 재생성 (각 컴포넌트)
+cd vbgw-ai && protoc -I=proto --go_out=proto/voicebot --go-grpc_out=proto/voicebot proto/voicebot.proto
+cd vbgw-freeswitch/bridge && protoc -I=proto --go_out=proto/voicebot --go-grpc_out=proto/voicebot proto/voicebot.proto
+```
+
+### Helm
+```bash
+helm -n vbgw-staging upgrade --install vbgw ./charts/vbgw \
+  -f charts/vbgw/values-staging.yaml
 ```
 
 ---
 
-## 5. gRPC 인터페이스 요약
+## 5. gRPC 인터페이스 (CANONICAL)
+
+`proto/voicebot.proto` 는 vbgw_v2 안에 있지만 **canonical 은 AgenticOE_v2/skeleton/contracts/proto/voicebot.proto**. 변경 시 AgenticOE_v2 PR 우선 + sync 스크립트.
 
 ```protobuf
-// protos/voicebot.proto
 service VoicebotAiService {
     rpc StreamSession(stream AudioChunk) returns (stream AiResponse);
 }
-
-// Gateway → AI: 20ms 오디오 청크
-message AudioChunk {
-    string session_id = 1;  // SIP Call-ID
-    bytes audio_data = 2;   // 16kHz PCM (20ms)
-    bool is_speaking = 3;   // VAD 결과
-}
-
-// AI → Gateway: STT 텍스트 또는 TTS 오디오
-message AiResponse {
-    enum ResponseType { STT_RESULT=0; TTS_AUDIO=1; END_OF_TURN=2; }
-    ResponseType type = 1;
-    string text_content = 2;
-    bytes audio_data = 3;
-    bool clear_buffer = 4;  // Barge-in 시 RingBuffer 플러시
-}
 ```
+
+자세한 정의는 canonical 파일.
 
 ---
 
-## 6. 코딩 컨벤션
+## 6. 환경 변수 — bridge
 
-### C++ 스타일
-- **표준:** C++20
-- **네이밍:** 클래스 `PascalCase`, 멤버변수 `snake_case_`, 함수 `camelCase`
-- **스마트 포인터:** raw pointer 대신 `std::unique_ptr` / `std::shared_ptr` 사용
-- **RAII 필수:** 모든 리소스(PJSIP, gRPC 채널, 파일 핸들)는 RAII로 관리
-- **스레드 안전:** 공유 자원은 반드시 `std::mutex` 또는 `std::atomic` 보호
-- **에러 처리:** 에러를 삼키지 않음 — spdlog로 로깅 후 상위로 전파
-- **헤더 가드:** `#pragma once` 사용
+**중요**: chart 의 `bridge.grpcAiAddr` 는 env `AI_GRPC_ADDR` 로 매핑. 옛 `GRPC_AI_ADDR` 은 코드가 안 읽음 (2026-04-26 수정).
 
-### 금지 사항
-- `new` / `delete` 직접 사용 금지 (스마트 포인터 대체)
-- 하드코딩된 IP/포트/경로 금지 (config 파일 또는 환경변수)
-- `using namespace std;` 전역 선언 금지
-- `models/silero_vad.onnx` 파일 수정 금지 (바이너리)
+| Env                       | Default                | 설명                                       |
+|---------------------------|------------------------|--------------------------------------------|
+| `AI_GRPC_ADDR`            | `127.0.0.1:50051`      | AI 엔진 endpoint. cutover 시 `agentoe-backend...` |
+| `AI_GRPC_TLS`             | `false`                | mTLS 활성 (현재는 plaintext)                |
+| `BRIDGE_TRACK`            | `stable`               | canary 추적 라벨 (`stable` / `canary`)      |
+| `WS_PORT`                 | `8090`                 | FS audio_fork 가 connect 하는 WS 포트      |
+| `INTERNAL_PORT`           | `8091`                 | orchestrator → bridge HTTP                 |
+| `ONNX_MODEL_PATH`         | `/models/silero_vad.onnx` | VAD 모델                                |
+| `GRPC_STREAM_DEADLINE_SECS`| `7200`                | gRPC stream 최대 길이 (2h, T-28 fix)       |
+| `WS_ALLOWED_ORIGINS`      | (empty = all)          | WS handshake origin 제한                   |
 
 ---
 
-## 7. 페르소나 에이전트 사용 가이드
+## 7. 코딩 컨벤션 (Go)
 
-이 프로젝트에는 `.claude/agents/` 에 10개의 전문 페르소나가 설정되어 있습니다.
+- **표준**: Go 1.23. 모듈 단위 분리.
+- **에러**: `fmt.Errorf("%w", err)` wrap. log 만 하고 삼키지 말 것.
+- **컨텍스트**: 모든 공개 함수 첫 인자 `context.Context`. timeout / cancel 전파.
+- **로그**: 표준 `log/slog` (구조화 JSON). secret 절대 로그 X.
+- **테스트**: `_test.go` 표준. 테이블 드리븐. integration 테스트는 `_integration_test.go` 분리.
+- **gRPC**: server-streaming 은 client cancel 즉시 cleanup. goroutine leak 주의.
 
-### 팀 구성
-| 에이전트 | 레벨 | 1차 역할 | 레드팀 대상 |
-|----------|------|----------|-------------|
-| `planner` | 시니어 | 기획/요구사항 | verifier, tester, docs |
-| `architect-system` | 전문가 | 시스템 아키텍처 | planner, developer-* |
-| `architect-software` | 전문가 | 소프트웨어 설계 | developer-*, architect-data |
-| `architect-data` | 시니어 | 데이터/프로토콜 설계 | developer-integration, docs |
-| `developer-core` | 시니어 | C++ 핵심 구현 | architect-*, tester |
-| `developer-integration` | 시니어 | gRPC/AI 연동 | architect-data, tester, verifier |
-| `verifier-requirements` | 시니어 | 요구사항 검증 | planner, architect-* |
-| `verifier-code-review` | 전문가 | 코드 품질/보안 감사 | developer-*, architect-software |
-| `tester-qa` | 시니어 | 테스트 설계/QA | developer-*, architect-* |
-| `documentation-writer` | 시니어 | 산출물 작성 | 전체 팀 산출물 |
-
-### 호출 예시
-```
-"developer-core로 VoicebotCall 버그 수정해줘"
-"architect-software가 레드팀으로 코드 설계 원칙 검토해줘"
-"verifier-code-review가 src/ai/VoicebotAiClient.cpp 전체 감사해줘"
-```
+### 금지
+- 하드코딩 IP/포트 — `internal/config/config.go` 의 env loader 사용
+- `panic()` — recover 없이 (orchestrator/bridge 둘 다 supervisor 없음)
+- `legacy/` 안 파일 수정 — 참조만, 빌드 대상 아님
+- `silero_vad.onnx` 수정 — 바이너리
 
 ---
 
-## 8. 주의사항 및 알려진 이슈
+## 8. 알려진 정합성 이슈
 
-- `build/` 폴더는 `.claudeignore`로 제외 — CMake 빌드 산출물
-- `build/generated/voicebot.pb.*` 는 proto 컴파일 자동 생성 파일 — 직접 수정 금지
-- `models/silero_vad.onnx` 는 바이너리 파일 — 읽기/분석 불필요
-- PJSIP 콜백은 PJSIP 내부 스레드에서 실행됨 — UI 스레드나 다른 스레드와 동기화 주의
-- gRPC Completion Queue는 별도 스레드에서 폴링 — VoicebotAiClient 생명주기 주의
+- **proto 중복**: `vbgw-ai/proto/`, `vbgw-freeswitch/protos/`, `vbgw-freeswitch/bridge/proto/` 세 곳에 같은 .proto. canonical 은 AgenticOE_v2. drift 검증: `cd ~/AgenticOE_v2/skeleton/contracts && make verify-vbgw VBGW=$HOME/vbgw_v2`.
+- **Chart env 키 버그 (FIXED 2026-04-26)**: 이전 chart 가 `GRPC_AI_ADDR` 로 export 했지만 Go 가 `AI_GRPC_ADDR` 만 읽어서 무시. canary cutover 작업 중 발견 + 수정.
+- **메트릭 시리즈 정합성**: AgenticOE_v2 의 SLO doc 이 정의한 시리즈 (`agentoe_call_setup_total{result}`, `agentoe_call_terminations_total{reason}`, `agentoe_call_duration_seconds`) 를 vbgw 측에서 노출하는지 미검증 — orchestrator/bridge 의 prometheus exporter 를 audit 해야 함.
 
 ---
 
-## 9. 관련 프로젝트 (모노레포)
+## 9. 운영 페이지
 
-```
-/Users/kchul199/Desktop/project/antigravity_project/
-├── vbgw/    ← 현재 프로젝트 (C++ VoiceBot Gateway)
-├── apigw/   ← Open API Gateway (Python/FastAPI, K8s)
-└── first_proj/ ← 프론트엔드 프로토타입 (HTML/JS)
-```
+- 통화 트러블슈팅: `vbgw-freeswitch/docs/operations_runbook.md`
+- 부하 테스트: `vbgw-freeswitch/scripts/` + `docs/performance/sla_baseline.md`
+- cutover (vbgw-ai → backend): `~/AgenticOE_v2/skeleton/docs/runbook/vbgw-ai-cutover.md`
+
+---
+
+## 10. 새 세션 진입 시
+
+1. 이 파일 (CLAUDE.md) 끝까지 읽기.
+2. 작업이 cross-project 면 `~/AgenticOE_v2/skeleton/docs/HANDOFF.md` 와 `cross-project-integration.md` 도 같이 읽기.
+3. proto / API 변경은 절대 vbgw_v2 안에서 단독 수정 금지 — AgenticOE_v2 PR 우선.

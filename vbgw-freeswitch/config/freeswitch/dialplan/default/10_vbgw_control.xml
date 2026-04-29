@@ -1,0 +1,58 @@
+<include>
+  <extension name="vbgw_dev_ai_local">
+    <condition field="destination_number" expression="^9296$">
+      <action application="set" data="vbgw_entry_number=9296"/>
+      <action application="set" data="vbgw_service_name=bot-main-dev"/>
+      <action application="set" data="vbgw_route_type=ai"/>
+      <action application="set" data="vbgw_ingress_stage=default-policy"/>
+      <action application="set" data="vbgw_routing_config_version=1"/>
+      <action application="answer"/>
+      <action application="park"/>
+    </condition>
+  </extension>
+
+  <extension name="vbgw_dev_queue_local">
+    <condition field="destination_number" expression="^9297$">
+      <action application="set" data="vbgw_entry_number=9297"/>
+      <action application="set" data="vbgw_service_name=bot-queue-dev"/>
+      <action application="set" data="vbgw_route_type=ai"/>
+      <action application="set" data="vbgw_ingress_stage=default-policy"/>
+      <action application="set" data="vbgw_routing_config_version=1"/>
+      <action application="answer"/>
+      <action application="park"/>
+    </condition>
+  </extension>
+
+  <extension name="vbgw_dev_human_local">
+    <condition field="destination_number" expression="^9298$">
+      <action application="set" data="vbgw_entry_number=9298"/>
+      <action application="set" data="vbgw_service_name=bot-human-dev"/>
+      <action application="set" data="vbgw_route_type=ai"/>
+      <action application="set" data="vbgw_ingress_stage=default-policy"/>
+      <action application="set" data="vbgw_routing_config_version=1"/>
+      <action application="answer"/>
+      <action application="park"/>
+    </condition>
+  </extension>
+
+  <extension name="vbgw_ai_start">
+    <condition field="destination_number" expression="^vbgw-ai-start$">
+      <action application="set" data="audio_fork_url=$${audio_fork_scheme}://$${bridge_host}:$${bridge_ws_port}/audio/${uuid}"/>
+      <action application="set" data="res=${uuid_audio_fork(${uuid} start ${audio_fork_url} mono 16000 audio_fork {} true true 16000)}"/>
+      <action application="playback" data="silence_stream://-1"/>
+    </condition>
+  </extension>
+
+  <extension name="vbgw_queue_hold">
+    <condition field="destination_number" expression="^vbgw-queue-hold$">
+      <action application="playback" data="${vbgw_queue_announcement}"/>
+      <action application="endless_playback" data="${vbgw_queue_hold_music}"/>
+    </condition>
+  </extension>
+
+  <extension name="vbgw_human_callcenter">
+    <condition field="destination_number" expression="^vbgw-human-callcenter$">
+      <action application="callcenter" data="${vbgw_human_queue}"/>
+    </condition>
+  </extension>
+</include>

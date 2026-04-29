@@ -16,6 +16,11 @@ DURATION_MS="${2:-300000}"       # 5 minutes per call (default)
 CONCURRENT="${3:-100}"           # 100 concurrent calls
 TOTAL_CALLS="${4:-600}"          # 600 total = 30 min cycle
 RATE="${5:-2}"                   # 2 calls per second
+AUTH_HEADER=()
+
+if [ -n "${ADMIN_API_KEY:-}" ]; then
+    AUTH_HEADER=(-H "Authorization: Bearer ${ADMIN_API_KEY}")
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RESULTS_DIR="${SCRIPT_DIR}/../results/load_$(date +%Y%m%d_%H%M%S)"
@@ -36,12 +41,12 @@ echo "============================================"
 
 # Pre-test: capture baseline metrics
 echo "[1/5] Capturing baseline metrics..."
-curl -s "http://${TARGET_IP}:8080/metrics" > "${RESULTS_DIR}/metrics_before.txt" 2>/dev/null || true
-curl -s "http://${TARGET_IP}:8080/health" > "${RESULTS_DIR}/health_before.json" 2>/dev/null || true
+curl -s "${AUTH_HEADER[@]}" "http://${TARGET_IP}:8080/metrics" > "${RESULTS_DIR}/metrics_before.txt" 2>/dev/null || true
+curl -s "${AUTH_HEADER[@]}" "http://${TARGET_IP}:8080/health" > "${RESULTS_DIR}/health_before.json" 2>/dev/null || true
 
 # Pre-test: capture baseline heap
 echo "[2/5] Capturing baseline heap profile..."
-curl -s "http://${TARGET_IP}:8080/debug/pprof/heap" > "${RESULTS_DIR}/heap_before.prof" 2>/dev/null || true
+curl -s -H "X-Admin-Key: ${ADMIN_API_KEY:-}" "http://${TARGET_IP}:8080/debug/pprof/heap" > "${RESULTS_DIR}/heap_before.prof" 2>/dev/null || true
 
 # Start SLO monitor in background
 echo "[3/5] Starting SLO monitor..."
@@ -69,9 +74,9 @@ kill "${SLO_PID}" 2>/dev/null || true
 
 # Post-test: capture final metrics
 echo "[5/5] Capturing post-test metrics..."
-curl -s "http://${TARGET_IP}:8080/metrics" > "${RESULTS_DIR}/metrics_after.txt" 2>/dev/null || true
-curl -s "http://${TARGET_IP}:8080/health" > "${RESULTS_DIR}/health_after.json" 2>/dev/null || true
-curl -s "http://${TARGET_IP}:8080/debug/pprof/heap" > "${RESULTS_DIR}/heap_after.prof" 2>/dev/null || true
+curl -s "${AUTH_HEADER[@]}" "http://${TARGET_IP}:8080/metrics" > "${RESULTS_DIR}/metrics_after.txt" 2>/dev/null || true
+curl -s "${AUTH_HEADER[@]}" "http://${TARGET_IP}:8080/health" > "${RESULTS_DIR}/health_after.json" 2>/dev/null || true
+curl -s -H "X-Admin-Key: ${ADMIN_API_KEY:-}" "http://${TARGET_IP}:8080/debug/pprof/heap" > "${RESULTS_DIR}/heap_after.prof" 2>/dev/null || true
 
 # Generate report
 echo ""

@@ -7,7 +7,11 @@ import (
 
 func TestLoad_BridgeDefaults(t *testing.T) {
 	os.Unsetenv("WS_PORT")
+	os.Unsetenv("BRIDGE_WS_PORT")
+	os.Unsetenv("INTERNAL_PORT")
+	os.Unsetenv("BRIDGE_INTERNAL_PORT")
 	os.Unsetenv("AI_GRPC_ADDR")
+	os.Unsetenv("WS_ALLOWED_ORIGINS")
 
 	cfg := Load()
 
@@ -48,5 +52,42 @@ func TestLoad_BridgeOverrides(t *testing.T) {
 	}
 	if !cfg.AIGrpcTLS {
 		t.Fatal("expected AI_GRPC_TLS=true")
+	}
+}
+
+func TestLoad_BridgeAliasOverrides(t *testing.T) {
+	os.Unsetenv("WS_PORT")
+	os.Unsetenv("INTERNAL_PORT")
+	os.Setenv("BRIDGE_WS_PORT", "10090")
+	os.Setenv("BRIDGE_INTERNAL_PORT", "10091")
+	defer func() {
+		os.Unsetenv("BRIDGE_WS_PORT")
+		os.Unsetenv("BRIDGE_INTERNAL_PORT")
+	}()
+
+	cfg := Load()
+
+	if cfg.WSPort != 10090 {
+		t.Fatalf("expected BRIDGE_WS_PORT=10090, got %d", cfg.WSPort)
+	}
+	if cfg.InternalPort != 10091 {
+		t.Fatalf("expected BRIDGE_INTERNAL_PORT=10091, got %d", cfg.InternalPort)
+	}
+}
+
+func TestLoad_WSAllowedOrigins(t *testing.T) {
+	os.Setenv("WS_ALLOWED_ORIGINS", "http://localhost:3000, https://admin.example.com ")
+	defer os.Unsetenv("WS_ALLOWED_ORIGINS")
+
+	cfg := Load()
+
+	if len(cfg.WSAllowedOrigins) != 2 {
+		t.Fatalf("expected 2 allowed origins, got %d", len(cfg.WSAllowedOrigins))
+	}
+	if cfg.WSAllowedOrigins[0] != "http://localhost:3000" {
+		t.Fatalf("unexpected first origin: %s", cfg.WSAllowedOrigins[0])
+	}
+	if cfg.WSAllowedOrigins[1] != "https://admin.example.com" {
+		t.Fatalf("unexpected second origin: %s", cfg.WSAllowedOrigins[1])
 	}
 }

@@ -24,10 +24,10 @@ import (
 
 // JWTClaims represents the payload of a VBGW JWT token.
 type JWTClaims struct {
-	Sub string `json:"sub"`            // Subject (client ID)
-	Iss string `json:"iss"`            // Issuer
-	Exp int64  `json:"exp"`            // Expiration (Unix timestamp)
-	Iat int64  `json:"iat"`            // Issued at
+	Sub   string `json:"sub"`             // Subject (client ID)
+	Iss   string `json:"iss"`             // Issuer
+	Exp   int64  `json:"exp"`             // Expiration (Unix timestamp)
+	Iat   int64  `json:"iat"`             // Issued at
 	Scope string `json:"scope,omitempty"` // Optional: "admin", "readonly", "calls"
 }
 

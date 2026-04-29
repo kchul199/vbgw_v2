@@ -27,7 +27,7 @@ type ESLChecker interface {
 
 // HealthHandler holds dependencies for health endpoints.
 type HealthHandler struct {
-	ESL        esl.Commander
+	ESL        ESLChecker
 	Sessions   session.Store
 	BridgeURL  string
 	StartTime  time.Time
@@ -35,7 +35,7 @@ type HealthHandler struct {
 }
 
 // NewHealthHandler creates a HealthHandler.
-func NewHealthHandler(eslClient esl.Commander, sessions session.Store, bridgeURL string) *HealthHandler {
+func NewHealthHandler(eslClient ESLChecker, sessions session.Store, bridgeURL string) *HealthHandler {
 	return &HealthHandler{
 		ESL:        eslClient,
 		Sessions:   sessions,

@@ -109,3 +109,28 @@ func TestExtractUUID(t *testing.T) {
 		}
 	}
 }
+
+func TestMakeOriginChecker(t *testing.T) {
+	checker := makeOriginChecker([]string{"https://admin.example.com"})
+
+	tests := []struct {
+		name    string
+		origin  string
+		allowed bool
+	}{
+		{name: "empty origin", origin: "", allowed: true},
+		{name: "localhost", origin: "http://localhost:3000", allowed: true},
+		{name: "configured origin", origin: "https://admin.example.com", allowed: true},
+		{name: "random external origin", origin: "https://evil.example.com", allowed: false},
+	}
+
+	for _, tc := range tests {
+		req := httptest.NewRequest(http.MethodGet, "/audio/test", nil)
+		if tc.origin != "" {
+			req.Header.Set("Origin", tc.origin)
+		}
+		if got := checker(req); got != tc.allowed {
+			t.Fatalf("%s: expected %v, got %v", tc.name, tc.allowed, got)
+		}
+	}
+}

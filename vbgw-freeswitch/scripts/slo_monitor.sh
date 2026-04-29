@@ -10,6 +10,11 @@ set -euo pipefail
 TARGET_IP="${1:-127.0.0.1}"
 OUTPUT_CSV="${2:-slo_log.csv}"
 INTERVAL=5  # seconds
+AUTH_HEADER=()
+
+if [ -n "${ADMIN_API_KEY:-}" ]; then
+    AUTH_HEADER=(-H "Authorization: Bearer ${ADMIN_API_KEY}")
+fi
 
 echo "timestamp,health_status,active_calls,dropped_frames,stream_errors,latency_ms" > "${OUTPUT_CSV}"
 
@@ -18,12 +23,12 @@ while true; do
     START_MS=$(date +%s%3N 2>/dev/null || python3 -c "import time; print(int(time.time()*1000))")
 
     # T-25: Isolate curl failures from set -e (prevent monitor exit on transient network error)
-    HEALTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${TARGET_IP}:8080/health" 2>/dev/null) || HEALTH_CODE="000"
+    HEALTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${AUTH_HEADER[@]}" "http://${TARGET_IP}:8080/health" 2>/dev/null) || HEALTH_CODE="000"
     END_MS=$(date +%s%3N 2>/dev/null || python3 -c "import time; print(int(time.time()*1000))")
     LATENCY=$((END_MS - START_MS))
 
     # Metrics — T-25: Isolate curl failures
-    METRICS=$(curl -s "http://${TARGET_IP}:8080/metrics" 2>/dev/null) || METRICS=""
+    METRICS=$(curl -s "${AUTH_HEADER[@]}" "http://${TARGET_IP}:8080/metrics" 2>/dev/null) || METRICS=""
     ACTIVE=$(echo "${METRICS}" | grep "^vbgw_active_calls " | awk '{print $2}' || echo "0")
     DROPPED=$(echo "${METRICS}" | grep "^vbgw_grpc_dropped_frames_total " | awk '{print $2}' || echo "0")
     ERRORS=$(echo "${METRICS}" | grep "^vbgw_grpc_stream_errors_total " | awk '{print $2}' || echo "0")
