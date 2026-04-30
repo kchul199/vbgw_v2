@@ -113,7 +113,6 @@ services:
     restart: unless-stopped
     ports:
       - "8090:8090"
-      - "8091:8091"
     networks:
       vbgw-net:
         aliases:
@@ -127,10 +126,12 @@ services:
       - ORCHESTRATOR_URL=http://orchestrator:8080
       - AI_GRPC_ADDR=vbgw-ai:8091
       - LOG_LEVEL=debug
+      - RUNTIME_PROFILE=${RUNTIME_PROFILE:-production}
+      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET}
       - ORT_API_VERSION=17
       - WS_ALLOWED_ORIGINS=${WS_ALLOWED_ORIGINS:-}
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:${BRIDGE_INTERNAL_PORT:-8091}/internal/health"]
+      test: ["CMD", "wget", "--header=X-Internal-Secret: ${INTERNAL_API_SECRET}", "-q", "-O-", "http://127.0.0.1:${BRIDGE_INTERNAL_PORT:-8091}/internal/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -169,8 +170,18 @@ services:
       - BRIDGE_INTERNAL_PORT=${BRIDGE_INTERNAL_PORT:-8091}
       - BRIDGE_HOST=${BRIDGE_HOST:-bridge}
       - AI_GRPC_ADDR=${AI_GRPC_ADDR:-vbgw-ai:8091}
+      - NODE_ID=${NODE_ID:-vbgw-orchestrator}
+      - ORCHESTRATOR_VERSION=${ORCHESTRATOR_VERSION:-7.0.0}
+      - LEASE_SCHEMA_VERSION=${LEASE_SCHEMA_VERSION:-1}
+      - CLUSTER_HEARTBEAT_INTERVAL_MS=${CLUSTER_HEARTBEAT_INTERVAL_MS:-2000}
+      - CLUSTER_HEARTBEAT_TTL_MS=${CLUSTER_HEARTBEAT_TTL_MS:-8000}
+      - CLUSTER_REAPER_INTERVAL_MS=${CLUSTER_REAPER_INTERVAL_MS:-5000}
+      - CLUSTER_LEASE_TTL_MS=${CLUSTER_LEASE_TTL_MS:-15000}
+      - CLUSTER_LEASE_STALE_GRACE_MS=${CLUSTER_LEASE_STALE_GRACE_MS:-10000}
       - ADMIN_API_KEY=${ADMIN_API_KEY}
+      - ADMIN_CONTROL_KEY=${ADMIN_CONTROL_KEY}
       - JWT_SECRET=${JWT_SECRET}
+      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET}
       - RUNTIME_PROFILE=${RUNTIME_PROFILE:-production}
       - ROUTING_CONFIG_PATH=${ROUTING_CONFIG_PATH:-/app/config/routing.yaml}
       - AI_ROUTE_NUMBERS=${AI_ROUTE_NUMBERS:-9196}

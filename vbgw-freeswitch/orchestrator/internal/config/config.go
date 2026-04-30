@@ -42,10 +42,11 @@ type Config struct {
 	BridgeInternalPort int
 
 	// HTTP API
-	HTTPPort       int
-	AdminAPIKey    string
-	RateLimitRPS   float64
-	RateLimitBurst int
+	HTTPPort        int
+	AdminAPIKey     string
+	AdminControlKey string
+	RateLimitRPS    float64
+	RateLimitBurst  int
 
 	// Session (Redis + Limits)
 	MaxSessions int64
@@ -72,8 +73,11 @@ type Config struct {
 	OTelEnabled  bool
 
 	// Runtime
-	RuntimeProfile string
-	LogLevel       string
+	RuntimeProfile      string
+	LogLevel            string
+	InternalAPISecret   string
+	NodeID              string
+	OrchestratorVersion string
 
 	// Phase 0 Routing
 	RoutingConfigPath string
@@ -92,6 +96,14 @@ type Config struct {
 	// Phase 7 distributed queue
 	DistributedQueueClaimTTLMS int
 	DistributedQueueScanLimit  int
+
+	// Phase 7 cluster leases / heartbeat
+	ClusterHeartbeatIntervalMS int
+	ClusterHeartbeatTTLMS      int
+	ClusterReaperIntervalMS    int
+	ClusterLeaseTTLMS          int
+	ClusterLeaseStaleGraceMS   int
+	LeaseSchemaVersion         int
 }
 
 func Load() *Config {
@@ -114,6 +126,7 @@ func Load() *Config {
 		BridgeInternalPort:         envInt("BRIDGE_INTERNAL_PORT", 8091),
 		HTTPPort:                   envInt("HTTP_PORT", 8080),
 		AdminAPIKey:                envStr("ADMIN_API_KEY", "changeme-admin-key"),
+		AdminControlKey:            envStr("ADMIN_CONTROL_KEY", ""),
 		RateLimitRPS:               envFloat("RATE_LIMIT_RPS", 20),
 		RateLimitBurst:             envInt("RATE_LIMIT_BURST", 40),
 		MaxSessions:                int64(envInt("MAX_SESSIONS", 100)),
@@ -132,6 +145,9 @@ func Load() *Config {
 		OTelEnabled:                envBool("OTEL_ENABLED", false),
 		RuntimeProfile:             envStr("RUNTIME_PROFILE", "dev"),
 		LogLevel:                   envStr("LOG_LEVEL", "info"),
+		InternalAPISecret:          envStr("INTERNAL_API_SECRET", ""),
+		NodeID:                     envStr("NODE_ID", defaultNodeID()),
+		OrchestratorVersion:        envStr("ORCHESTRATOR_VERSION", "phase7-dev"),
 		RoutingConfigPath:          envStr("ROUTING_CONFIG_PATH", "/app/config/routing.yaml"),
 		AIRouteNumbers:             envCSV("AI_ROUTE_NUMBERS", []string{"9196"}),
 		OverflowQueueTickMS:        envInt("OVERFLOW_QUEUE_TICK_MS", 1000),
@@ -140,6 +156,12 @@ func Load() *Config {
 		SlotRegistrationTTLSec:     envInt("SLOT_REGISTRATION_TTL_SECONDS", 30),
 		DistributedQueueClaimTTLMS: envInt("DISTRIBUTED_QUEUE_CLAIM_TTL_MS", 3000),
 		DistributedQueueScanLimit:  envInt("DISTRIBUTED_QUEUE_SCAN_LIMIT", 8),
+		ClusterHeartbeatIntervalMS: envInt("CLUSTER_HEARTBEAT_INTERVAL_MS", 2000),
+		ClusterHeartbeatTTLMS:      envInt("CLUSTER_HEARTBEAT_TTL_MS", 8000),
+		ClusterReaperIntervalMS:    envInt("CLUSTER_REAPER_INTERVAL_MS", 5000),
+		ClusterLeaseTTLMS:          envInt("CLUSTER_LEASE_TTL_MS", 15000),
+		ClusterLeaseStaleGraceMS:   envInt("CLUSTER_LEASE_STALE_GRACE_MS", 10000),
+		LeaseSchemaVersion:         envInt("LEASE_SCHEMA_VERSION", 1),
 	}
 }
 
@@ -195,4 +217,14 @@ func envCSV(key string, fallback []string) []string {
 		return append([]string(nil), fallback...)
 	}
 	return values
+}
+
+func defaultNodeID() string {
+	if host, err := os.Hostname(); err == nil {
+		host = strings.TrimSpace(host)
+		if host != "" {
+			return host
+		}
+	}
+	return "vbgw-orchestrator"
 }

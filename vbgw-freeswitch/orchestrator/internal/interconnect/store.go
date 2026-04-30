@@ -32,6 +32,31 @@ func (s *Store) Update(state routing.GatewayState) {
 	updateGatewayHealthMetrics(state, time.Now())
 }
 
+func (s *Store) SetManualStandby(gatewayName, reason string, enabled bool) bool {
+	if gatewayName == "" {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, ok := s.snapshots[gatewayName]
+	if !ok {
+		return false
+	}
+	if enabled {
+		state.OperatorState = "standby"
+		state.OperatorReason = reason
+		state.OperatorAtUnix = time.Now().Unix()
+	} else {
+		state.OperatorState = ""
+		state.OperatorReason = ""
+		state.OperatorAtUnix = 0
+	}
+	s.snapshots[gatewayName] = state
+	return true
+}
+
 func (s *Store) Get(gatewayName string) (routing.GatewayState, bool) {
 	s.mu.RLock()
 	state, ok := s.snapshots[gatewayName]

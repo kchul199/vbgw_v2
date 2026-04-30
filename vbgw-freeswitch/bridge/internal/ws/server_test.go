@@ -10,28 +10,30 @@ import (
 
 func TestInternalHandler_Health(t *testing.T) {
 	s := &Server{}
-	handler := s.InternalHandler()
+	handler := s.InternalHandler("secret-123")
 
 	req := httptest.NewRequest("GET", "/internal/health", nil)
+	req.Header.Set("X-Internal-Secret", "secret-123")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", w.Code)
 	}
 
-	var resp map[string]string
+	var resp map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&resp)
-	if resp["status"] != "healthy" {
-		t.Fatalf("expected healthy, got %s", resp["status"])
+	if resp["status"] != "degraded" {
+		t.Fatalf("expected degraded, got %v", resp["status"])
 	}
 }
 
 func TestInternalHandler_AIPause_NoSession(t *testing.T) {
 	s := &Server{}
-	handler := s.InternalHandler()
+	handler := s.InternalHandler("secret-123")
 
 	req := httptest.NewRequest("POST", "/internal/ai-pause/nonexistent-uuid", nil)
+	req.Header.Set("X-Internal-Secret", "secret-123")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -43,9 +45,10 @@ func TestInternalHandler_AIPause_NoSession(t *testing.T) {
 
 func TestInternalHandler_AIResume_NoSession(t *testing.T) {
 	s := &Server{}
-	handler := s.InternalHandler()
+	handler := s.InternalHandler("secret-123")
 
 	req := httptest.NewRequest("POST", "/internal/ai-resume/nonexistent-uuid", nil)
+	req.Header.Set("X-Internal-Secret", "secret-123")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -56,9 +59,10 @@ func TestInternalHandler_AIResume_NoSession(t *testing.T) {
 
 func TestInternalHandler_DTMF_MissingDigit(t *testing.T) {
 	s := &Server{}
-	handler := s.InternalHandler()
+	handler := s.InternalHandler("secret-123")
 
 	req := httptest.NewRequest("POST", "/internal/dtmf/test-uuid", strings.NewReader(`{}`))
+	req.Header.Set("X-Internal-Secret", "secret-123")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -69,9 +73,10 @@ func TestInternalHandler_DTMF_MissingDigit(t *testing.T) {
 
 func TestInternalHandler_DTMF_InvalidJSON(t *testing.T) {
 	s := &Server{}
-	handler := s.InternalHandler()
+	handler := s.InternalHandler("secret-123")
 
 	req := httptest.NewRequest("POST", "/internal/dtmf/test-uuid", strings.NewReader(`{invalid`))
+	req.Header.Set("X-Internal-Secret", "secret-123")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -82,14 +87,28 @@ func TestInternalHandler_DTMF_InvalidJSON(t *testing.T) {
 
 func TestInternalHandler_Shutdown(t *testing.T) {
 	s := &Server{}
-	handler := s.InternalHandler()
+	handler := s.InternalHandler("secret-123")
 
 	req := httptest.NewRequest("POST", "/internal/shutdown", nil)
+	req.Header.Set("X-Internal-Secret", "secret-123")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestInternalHandler_RejectsMissingSecret(t *testing.T) {
+	s := &Server{}
+	handler := s.InternalHandler("secret-123")
+
+	req := httptest.NewRequest("POST", "/internal/shutdown", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
 	}
 }
 

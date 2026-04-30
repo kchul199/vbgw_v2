@@ -38,14 +38,15 @@ var (
 )
 
 type ControlHandler struct {
-	ESL             esl.Commander
-	Sessions        session.Store
-	GatewaySelector *interconnect.Selector
-	HandoffManager  *interconnect.HandoffManager
-	OverflowManager *overflow.Manager
-	BridgeURL       string
-	httpClient      *http.Client
-	NodeID          string
+	ESL               esl.Commander
+	Sessions          session.Store
+	GatewaySelector   *interconnect.Selector
+	HandoffManager    *interconnect.HandoffManager
+	OverflowManager   *overflow.Manager
+	BridgeURL         string
+	InternalAPISecret string
+	httpClient        *http.Client
+	NodeID            string
 }
 
 type dtmfRequest struct {
@@ -400,10 +401,10 @@ func (h *ControlHandler) AttendedTransfer(w http.ResponseWriter, r *http.Request
 }
 
 func (h *ControlHandler) notifyBridge(action, uuid string) {
-	notifyBridgeAction(h.BridgeURL, action, uuid, h.httpClient)
+	notifyBridgeAction(h.BridgeURL, h.InternalAPISecret, action, uuid, h.httpClient)
 }
 
-func notifyBridgeAction(bridgeURL, action, uuid string, client *http.Client) {
+func notifyBridgeAction(bridgeURL, internalSecret, action, uuid string, client *http.Client) {
 	if strings.TrimSpace(bridgeURL) == "" || strings.TrimSpace(uuid) == "" {
 		return
 	}
@@ -412,6 +413,9 @@ func notifyBridgeAction(bridgeURL, action, uuid string, client *http.Client) {
 	}
 	url := fmt.Sprintf("%s/internal/%s/%s", bridgeURL, action, uuid)
 	req, _ := http.NewRequest("POST", url, nil)
+	if internalSecret != "" {
+		req.Header.Set("X-Internal-Secret", internalSecret)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Error("Bridge notification failed", "action", action, "uuid", uuid, "err", err)
@@ -421,7 +425,7 @@ func notifyBridgeAction(bridgeURL, action, uuid string, client *http.Client) {
 }
 
 // HandleLocalCommand executes a command received via Pub/Sub on the local node where the session resides.
-func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr session.Store, overflowMgr *overflow.Manager, eslClient esl.Commander, gatewaySelector *interconnect.Selector, handoffMgr *interconnect.HandoffManager, bridgeURL string) {
+func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr session.Store, overflowMgr *overflow.Manager, eslClient esl.Commander, gatewaySelector *interconnect.Selector, handoffMgr *interconnect.HandoffManager, bridgeURL, internalSecret string) {
 	s, ok := sessionMgr.Get(ctx, msg.SessionID)
 	if !ok {
 		slog.Warn("Local command route failed: session not found", "session_id", msg.SessionID)
@@ -455,7 +459,7 @@ func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr 
 		}
 		if confirmed {
 			s.SetAIPaused(true)
-			notifyBridgeAction(bridgeURL, "ai-pause", s.FSUUID, nil)
+			notifyBridgeAction(bridgeURL, internalSecret, "ai-pause", s.FSUUID, nil)
 			if released, releaseErr := session.ReleaseServiceOwnership(ctx, sessionMgr, s); releaseErr != nil {
 				slog.Error("Failed to persist service ownership release after confirmed PubSub transfer handoff", "session_id", msg.SessionID, "err", releaseErr)
 			} else if released {
@@ -488,7 +492,7 @@ func HandleLocalCommand(ctx context.Context, msg session.CommandMsg, sessionMgr 
 		}
 		if confirmed {
 			s.SetAIPaused(true)
-			notifyBridgeAction(bridgeURL, "ai-pause", s.FSUUID, nil)
+			notifyBridgeAction(bridgeURL, internalSecret, "ai-pause", s.FSUUID, nil)
 			if released, releaseErr := session.ReleaseServiceOwnership(ctx, sessionMgr, s); releaseErr != nil {
 				slog.Error("Failed to persist service ownership release after confirmed PubSub attended handoff", "session_id", msg.SessionID, "err", releaseErr)
 			} else if released {

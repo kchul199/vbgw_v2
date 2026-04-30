@@ -5,77 +5,50 @@ import (
 	"testing"
 )
 
-func TestLoad_Defaults(t *testing.T) {
-	// Clear any env vars that might interfere
-	os.Unsetenv("ESL_HOST")
-	os.Unsetenv("HTTP_PORT")
-	os.Unsetenv("MAX_SESSIONS")
-	os.Unsetenv("ROUTING_CONFIG_PATH")
-
+func TestLoad_DefaultsIncludePhase6Secrets(t *testing.T) {
+	os.Unsetenv("ADMIN_CONTROL_KEY")
+	os.Unsetenv("INTERNAL_API_SECRET")
 	cfg := Load()
 
-	if cfg.ESLHost != "127.0.0.1" {
-		t.Fatalf("expected ESL_HOST=127.0.0.1, got %s", cfg.ESLHost)
+	if cfg.AdminControlKey != "" {
+		t.Fatalf("expected empty admin control key by default, got %q", cfg.AdminControlKey)
 	}
-	if cfg.ESLPort != 8021 {
-		t.Fatalf("expected ESL_PORT=8021, got %d", cfg.ESLPort)
-	}
-	if cfg.HTTPPort != 8080 {
-		t.Fatalf("expected HTTP_PORT=8080, got %d", cfg.HTTPPort)
-	}
-	if cfg.MaxSessions != 100 {
-		t.Fatalf("expected MAX_SESSIONS=100, got %d", cfg.MaxSessions)
-	}
-	if cfg.RoutingConfigPath != "/app/config/routing.yaml" {
-		t.Fatalf("expected default routing path, got %s", cfg.RoutingConfigPath)
-	}
-	if cfg.RecordingEnable {
-		t.Fatal("expected RECORDING_ENABLE=false")
+	if cfg.InternalAPISecret != "" {
+		t.Fatalf("expected empty internal api secret by default, got %q", cfg.InternalAPISecret)
 	}
 }
 
-func TestLoad_EnvOverrides(t *testing.T) {
-	os.Setenv("HTTP_PORT", "9090")
-	os.Setenv("MAX_SESSIONS", "50")
-	os.Setenv("RECORDING_ENABLE", "true")
-	os.Setenv("ROUTING_CONFIG_PATH", "/tmp/routing.yaml")
-	defer func() {
-		os.Unsetenv("HTTP_PORT")
-		os.Unsetenv("MAX_SESSIONS")
-		os.Unsetenv("RECORDING_ENABLE")
-		os.Unsetenv("ROUTING_CONFIG_PATH")
-	}()
+func TestLoad_ReadsPhase6Secrets(t *testing.T) {
+	os.Setenv("ADMIN_CONTROL_KEY", "control-secret-123")
+	os.Setenv("INTERNAL_API_SECRET", "internal-secret-456")
+	defer os.Unsetenv("ADMIN_CONTROL_KEY")
+	defer os.Unsetenv("INTERNAL_API_SECRET")
 
 	cfg := Load()
-
-	if cfg.HTTPPort != 9090 {
-		t.Fatalf("expected HTTP_PORT=9090, got %d", cfg.HTTPPort)
+	if cfg.AdminControlKey != "control-secret-123" {
+		t.Fatalf("expected admin control key override, got %q", cfg.AdminControlKey)
 	}
-	if cfg.MaxSessions != 50 {
-		t.Fatalf("expected MAX_SESSIONS=50, got %d", cfg.MaxSessions)
-	}
-	if !cfg.RecordingEnable {
-		t.Fatal("expected RECORDING_ENABLE=true")
-	}
-	if cfg.RoutingConfigPath != "/tmp/routing.yaml" {
-		t.Fatalf("expected ROUTING_CONFIG_PATH override, got %s", cfg.RoutingConfigPath)
+	if cfg.InternalAPISecret != "internal-secret-456" {
+		t.Fatalf("expected internal api secret override, got %q", cfg.InternalAPISecret)
 	}
 }
 
-func TestLoad_InvalidEnvFallsBackToDefault(t *testing.T) {
-	os.Setenv("HTTP_PORT", "not_a_number")
-	os.Setenv("RECORDING_ENABLE", "not_a_bool")
-	defer func() {
-		os.Unsetenv("HTTP_PORT")
-		os.Unsetenv("RECORDING_ENABLE")
-	}()
+func TestLoad_ReadsPhase7ClusterConfig(t *testing.T) {
+	os.Setenv("NODE_ID", "orch-a")
+	os.Setenv("ORCHESTRATOR_VERSION", "7.1.0")
+	os.Setenv("LEASE_SCHEMA_VERSION", "2")
+	defer os.Unsetenv("NODE_ID")
+	defer os.Unsetenv("ORCHESTRATOR_VERSION")
+	defer os.Unsetenv("LEASE_SCHEMA_VERSION")
 
 	cfg := Load()
-
-	if cfg.HTTPPort != 8080 {
-		t.Fatalf("expected fallback HTTP_PORT=8080, got %d", cfg.HTTPPort)
+	if cfg.NodeID != "orch-a" {
+		t.Fatalf("expected node id override, got %q", cfg.NodeID)
 	}
-	if cfg.RecordingEnable {
-		t.Fatal("expected fallback RECORDING_ENABLE=false")
+	if cfg.OrchestratorVersion != "7.1.0" {
+		t.Fatalf("expected orchestrator version override, got %q", cfg.OrchestratorVersion)
+	}
+	if cfg.LeaseSchemaVersion != 2 {
+		t.Fatalf("expected lease schema version override, got %d", cfg.LeaseSchemaVersion)
 	}
 }

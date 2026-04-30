@@ -64,7 +64,7 @@ func TestHealth_ReturnsJSONWithActiveCalls(t *testing.T) {
 	}))
 	defer bridgeServer.Close()
 
-	h := NewHealthHandler(eslStub{connected: true}, sessions, bridgeServer.URL)
+	h := NewHealthHandler(eslStub{connected: true}, sessions, bridgeServer.URL, "")
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
 
@@ -92,7 +92,7 @@ func TestHealth_ReturnsJSONWithActiveCalls(t *testing.T) {
 func TestHealth_BridgeDown_ReturnsDegraded(t *testing.T) {
 	sessions := session.NewMemoryStore(100)
 	// No bridge server → connection refused
-	h := NewHealthHandler(eslStub{connected: true}, sessions, "http://127.0.0.1:19999")
+	h := NewHealthHandler(eslStub{connected: true}, sessions, "http://127.0.0.1:19999", "")
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
 

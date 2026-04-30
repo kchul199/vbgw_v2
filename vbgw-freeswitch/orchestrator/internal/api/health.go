@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"time"
 
+	"vbgw-orchestrator/internal/metrics"
 	"vbgw-orchestrator/internal/session"
 )
 
@@ -27,21 +28,23 @@ type ESLChecker interface {
 
 // HealthHandler holds dependencies for health endpoints.
 type HealthHandler struct {
-	ESL        ESLChecker
-	Sessions   session.Store
-	BridgeURL  string
-	StartTime  time.Time
-	httpClient *http.Client
+	ESL          ESLChecker
+	Sessions     session.Store
+	BridgeURL    string
+	BridgeSecret string
+	StartTime    time.Time
+	httpClient   *http.Client
 }
 
 // NewHealthHandler creates a HealthHandler.
-func NewHealthHandler(eslClient ESLChecker, sessions session.Store, bridgeURL string) *HealthHandler {
+func NewHealthHandler(eslClient ESLChecker, sessions session.Store, bridgeURL, bridgeSecret string) *HealthHandler {
 	return &HealthHandler{
-		ESL:        eslClient,
-		Sessions:   sessions,
-		BridgeURL:  bridgeURL,
-		StartTime:  time.Now(),
-		httpClient: &http.Client{Timeout: 2 * time.Second},
+		ESL:          eslClient,
+		Sessions:     sessions,
+		BridgeURL:    bridgeURL,
+		BridgeSecret: bridgeSecret,
+		StartTime:    time.Now(),
+		httpClient:   &http.Client{Timeout: 2 * time.Second},
 	}
 }
 
@@ -80,24 +83,33 @@ func (h *HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
 	// Check ESL
 	if h.ESL.IsConnected() {
 		resp.ESL = "connected"
+		metrics.ESLConnected.Set(1)
 	} else {
 		resp.ESL = "disconnected"
 		resp.Status = "degraded"
+		metrics.ESLConnected.Set(0)
 	}
 
 	// Check Bridge
 	// T-11: Always close response body to prevent fd leak
-	bridgeResp, err := h.httpClient.Get(h.BridgeURL + "/internal/health")
+	req, _ := http.NewRequest(http.MethodGet, h.BridgeURL+"/internal/health", nil)
+	if h.BridgeSecret != "" {
+		req.Header.Set("X-Internal-Secret", h.BridgeSecret)
+	}
+	bridgeResp, err := h.httpClient.Do(req)
 	if err != nil {
 		resp.Bridge = "unreachable"
 		resp.Status = "degraded"
+		metrics.BridgeHealthy.Set(0)
 	} else {
 		defer bridgeResp.Body.Close()
 		if bridgeResp.StatusCode != http.StatusOK {
 			resp.Bridge = "unreachable"
 			resp.Status = "degraded"
+			metrics.BridgeHealthy.Set(0)
 		} else {
 			resp.Bridge = "healthy"
+			metrics.BridgeHealthy.Set(1)
 		}
 	}
 

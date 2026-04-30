@@ -168,6 +168,11 @@ var (
 		Help: "Current queued sessions per logical service",
 	}, []string{"service"})
 
+	ServiceControlState = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vbgw_service_control_state",
+		Help: "Current operator control state per logical service (1 for current state, 0 otherwise)",
+	}, []string{"service", "state"})
+
 	QueueWaitSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "vbgw_queue_wait_seconds",
 		Help: "Current oldest queue wait time in seconds per logical service",
@@ -202,4 +207,34 @@ var (
 		Name: "vbgw_gateway_probe_failures_total",
 		Help: "Total gateway probe failures by gateway",
 	}, []string{"gateway"})
+
+	AdminControlOperationsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "vbgw_admin_control_operations_total",
+		Help: "Total admin control operations by kind and final status",
+	}, []string{"kind", "status"})
+
+	NodeHeartbeatAgeSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vbgw_node_heartbeat_age_seconds",
+		Help: "Age of the last local cluster heartbeat in seconds",
+	}, []string{"node"})
+
+	NodeState = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vbgw_node_state",
+		Help: "Current local node state (1 for current state, 0 otherwise)",
+	}, []string{"node", "state"})
+
+	DistributedLeaseTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "vbgw_distributed_lease_total",
+		Help: "Distributed slot lease operations by result",
+	}, []string{"result"})
+
+	DistributedLeaseStaleTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "vbgw_distributed_lease_stale_total",
+		Help: "Total stale distributed leases reaped by this node",
+	})
+
+	DrainSessionsRemaining = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "vbgw_drain_sessions_remaining",
+		Help: "Current remaining local sessions while draining",
+	}, []string{"node"})
 )

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestAuthMiddleware_ValidKey(t *testing.T) {
@@ -158,5 +159,60 @@ func TestMetricsMiddleware_RecordsStatusCode(t *testing.T) {
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", w.Code)
+	}
+}
+
+func TestControlAuthMiddleware_AllowsScopedJWT(t *testing.T) {
+	token, err := GenerateJWT("test-secret-123456789012345678901234", "operator-1", "tests", "admin control", time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate jwt: %v", err)
+	}
+
+	handler := ControlAuthMiddleware("test-secret-123456789012345678901234", "")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/control", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestControlAuthMiddleware_RejectsInsufficientScope(t *testing.T) {
+	token, err := GenerateJWT("test-secret-123456789012345678901234", "viewer-1", "tests", "readonly", time.Minute)
+	if err != nil {
+		t.Fatalf("failed to generate jwt: %v", err)
+	}
+
+	handler := ControlAuthMiddleware("test-secret-123456789012345678901234", "")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/control", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestSharedSecretMiddleware(t *testing.T) {
+	handler := SharedSecretMiddleware("internal-secret-123")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/internal", nil)
+	req.Header.Set("X-Internal-Secret", "internal-secret-123")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
 }

@@ -88,6 +88,78 @@ curl http://localhost:8080/health | jq
 curl http://localhost:8080/metrics | grep vbgw_active_calls
 ```
 
+### 2.5 Admin Control API
+
+운영 조회와 운영 제어는 인증 수준이 다릅니다.
+
+- Read API: `Authorization: Bearer <ADMIN_API_KEY 또는 readonly/admin JWT>`
+- Control API: `Authorization: Bearer <ADMIN_CONTROL_KEY 또는 control/admin scope JWT>`
+
+대표 제어 API:
+
+```bash
+# 서비스 일시정지
+curl -X POST http://localhost:8080/api/v1/admin/services/bot-main/pause \
+  -H "Authorization: Bearer ${ADMIN_CONTROL_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"maintenance window"}'
+
+# 서비스 재개
+curl -X POST http://localhost:8080/api/v1/admin/services/bot-main/resume \
+  -H "Authorization: Bearer ${ADMIN_CONTROL_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"maintenance complete"}'
+
+# queue 강제 비우기
+curl -X POST http://localhost:8080/api/v1/admin/queues/bot-main/flush \
+  -H "Authorization: Bearer ${ADMIN_CONTROL_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"queue reset"}'
+
+# gateway 수동 standby
+curl -X POST http://localhost:8080/api/v1/admin/gateways/pbx-main/standby \
+  -H "Authorization: Bearer ${ADMIN_CONTROL_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"pbx maintenance","enabled":true}'
+```
+
+모든 control API 응답에는 `operation.id`가 포함되며, 아래 조회로 추적할 수 있습니다.
+
+```bash
+curl http://localhost:8080/api/v1/admin/operations \
+  -H "Authorization: Bearer ${ADMIN_API_KEY}" | jq
+```
+
+### 2.6 Cluster Admin API
+
+Phase 7부터는 node drain/resume, distributed lease, compatibility gate를 조회할 수 있습니다.
+
+```bash
+# Cluster node 상태
+curl http://localhost:8080/api/v1/admin/cluster/nodes \
+  -H "Authorization: Bearer ${ADMIN_API_KEY}" | jq
+
+# Distributed lease 상태
+curl http://localhost:8080/api/v1/admin/cluster/leases \
+  -H "Authorization: Bearer ${ADMIN_API_KEY}" | jq
+
+# Compatibility gate 확인
+curl http://localhost:8080/api/v1/admin/cluster/compatibility \
+  -H "Authorization: Bearer ${ADMIN_API_KEY}" | jq
+
+# 특정 node drain
+curl -X POST http://localhost:8080/api/v1/admin/cluster/nodes/${NODE_ID}/drain \
+  -H "Authorization: Bearer ${ADMIN_CONTROL_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"rolling deploy"}'
+
+# 특정 node resume
+curl -X POST http://localhost:8080/api/v1/admin/cluster/nodes/${NODE_ID}/resume \
+  -H "Authorization: Bearer ${ADMIN_CONTROL_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"deploy complete"}'
+```
+
 ### 2.4 FreeSWITCH CLI 진단
 
 ```bash
@@ -105,11 +177,18 @@ docker compose exec freeswitch fs_cli -x "status"
 | 메트릭 | SLO | 알람 조건 |
 |--------|-----|----------|
 | `vbgw_active_calls` | - | > MAX_SESSIONS (100) |
+| `vbgw_service_control_state` | - | `paused/draining` 상태 장기 지속 |
+| `vbgw_node_heartbeat_age_seconds` | - | heartbeat age > TTL |
+| `vbgw_node_state` | - | `draining/paused` 상태 장기 지속 |
+| `vbgw_distributed_lease_total` | - | conflict/error 급증 시 조사 |
+| `vbgw_distributed_lease_stale_total` | - | stale reap 증가 시 조사 |
+| `vbgw_drain_sessions_remaining` | - | drain 중 감소 추이 확인 |
 | `vbgw_esl_connected` | - | = 0 for > 10s |
 | `vbgw_grpc_dropped_frames_total` | ≤ 0.1% | rate > 0.001/s |
 | `vbgw_grpc_stream_errors_total` | ≤ 0.1% | rate > 0.001/s |
 | `vbgw_bargein_events_total` | - | 모니터링용 |
 | `vbgw_admin_api_rate_limited_total` | - | rate > 1/s |
+| `vbgw_admin_control_operations_total` | - | failed 증가 시 조사 |
 
 ### 3.2 SLO 대시보드 (Grafana 쿼리)
 

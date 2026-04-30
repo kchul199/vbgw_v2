@@ -36,10 +36,12 @@ type Config struct {
 	GrpcStreamDeadlineS int
 
 	// Orchestrator (for barge-in callback)
-	OrchestratorURL string
+	OrchestratorURL   string
+	InternalAPISecret string
 
 	// Logging
-	LogLevel string
+	LogLevel       string
+	RuntimeProfile string
 
 	// WebSocket origin policy
 	WSAllowedOrigins []string
@@ -57,7 +59,9 @@ func Load() *Config {
 		// T-28: Reduced from 86400 (24h) to 7200 (2h) to prevent zombie streams
 		GrpcStreamDeadlineS: envInt("GRPC_STREAM_DEADLINE_SECS", 7200),
 		OrchestratorURL:     envStr("ORCHESTRATOR_URL", "http://127.0.0.1:8080"),
+		InternalAPISecret:   envStr("INTERNAL_API_SECRET", ""),
 		LogLevel:            envStr("LOG_LEVEL", "info"),
+		RuntimeProfile:      envStr("RUNTIME_PROFILE", "dev"),
 		WSAllowedOrigins:    envCSV("WS_ALLOWED_ORIGINS"),
 	}
 }

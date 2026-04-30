@@ -23,9 +23,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"vbgw-orchestrator/internal/api"
 	"vbgw-orchestrator/internal/capacity"
 	"vbgw-orchestrator/internal/cdr"
+	"vbgw-orchestrator/internal/cluster"
 	"vbgw-orchestrator/internal/config"
 	"vbgw-orchestrator/internal/esl"
 	"vbgw-orchestrator/internal/interconnect"
@@ -37,8 +40,6 @@ import (
 	"vbgw-orchestrator/internal/session"
 	"vbgw-orchestrator/internal/slots"
 	"vbgw-orchestrator/internal/telemetry"
-
-	"github.com/google/uuid"
 )
 
 const (
@@ -54,8 +55,13 @@ func main() {
 	cfg := config.Load()
 	setupLogging(cfg.LogLevel)
 
-	// Generate Node ID for distributed ownership
-	nodeID := uuid.New().String()
+	nodeID := strings.TrimSpace(cfg.NodeID)
+	if nodeID == "" {
+		nodeID = cluster.DefaultNodeID()
+	}
+	if nodeID == "" {
+		nodeID = "vbgw-orchestrator"
+	}
 	slog.Info("Orchestrator starting",
 		"node_id", nodeID,
 		"profile", cfg.RuntimeProfile,
@@ -100,11 +106,16 @@ func main() {
 	// C-3 FIX: Redis 연결 실패 시 MemoryStore로 자동 폴백하여 게이트웨이 가용성 유지
 	var sessionMgr session.Store
 	overflowOpts := make([]overflow.Option, 0, 1)
+	var clusterMgr *cluster.Manager
 	redisMgr, err := session.NewRedisStore(cfg.RedisAddr, cfg.RedisPass, cfg.RedisDB, cfg.MaxSessions, nodeID)
 	if err != nil {
 		slog.Error("Redis connection failed — falling back to in-memory session store",
 			"redis_addr", cfg.RedisAddr, "err", err,
 			"impact", "Multi-node session sync and Pub/Sub command routing will be unavailable")
+		if cfg.RuntimeProfile == "production" {
+			slog.Error("Production profile requires Redis-backed session store — refusing to start with memory fallback")
+			os.Exit(1)
+		}
 		sessionMgr = session.NewMemoryStore(cfg.MaxSessions)
 	} else {
 		sessionMgr = redisMgr
@@ -114,8 +125,48 @@ func main() {
 			time.Duration(cfg.DistributedQueueClaimTTLMS)*time.Millisecond,
 			cfg.DistributedQueueScanLimit,
 		))
+		clusterMgr = cluster.NewManager(redisMgr.Client(), nodeID, cluster.Options{
+			HeartbeatInterval:   time.Duration(cfg.ClusterHeartbeatIntervalMS) * time.Millisecond,
+			HeartbeatTTL:        time.Duration(cfg.ClusterHeartbeatTTLMS) * time.Millisecond,
+			ReaperInterval:      time.Duration(cfg.ClusterReaperIntervalMS) * time.Millisecond,
+			LeaseTTL:            time.Duration(cfg.ClusterLeaseTTLMS) * time.Millisecond,
+			LeaseStaleGrace:     time.Duration(cfg.ClusterLeaseStaleGraceMS) * time.Millisecond,
+			OrchestratorVersion: cfg.OrchestratorVersion,
+			LeaseSchemaVersion:  cfg.LeaseSchemaVersion,
+			LocalSessions: func() int64 {
+				var count int64
+				sessionMgr.ForEachLocal(func(_ *session.SessionState) {
+					count++
+				})
+				return count
+			},
+			RoutingVersion: func() int {
+				if routeRuntime != nil && routeRuntime.Config != nil {
+					return routeRuntime.Config.Version
+				}
+				return 0
+			},
+		})
 	}
 	overflowMgr := overflow.NewManager(overflowOpts...)
+	if clusterMgr != nil {
+		capacityMgr.SetNodeStateProvider(clusterMgr)
+		capacityMgr.SetDistributedLeases(clusterMgr.LeaseStore())
+		clusterMgr.Start(ctx)
+		if report, compatErr := clusterMgr.CompatibilityReport(ctx, func() int {
+			if routeRuntime != nil && routeRuntime.Config != nil {
+				return routeRuntime.Config.Version
+			}
+			return 0
+		}()); compatErr == nil && !report.Compatible {
+			slog.Error("Cluster compatibility gate failed on startup", "issues", report.Issues)
+			if cfg.RuntimeProfile == "production" {
+				os.Exit(1)
+			}
+			_ = clusterMgr.SetState(ctx, cluster.NodeStatePaused, "compatibility gate failed")
+		}
+		go runLeaseRenewalLoop(ctx, 3*time.Second, capacityMgr)
+	}
 
 	// Connect ESL (eslClient used in handler closure, declared first)
 	var eslClient *esl.Client
@@ -129,7 +180,7 @@ func main() {
 	go sessionMgr.SubscribeCommands(ctx, func(msg session.CommandMsg) {
 		slog.Info("Received Pub/Sub command", "action", msg.Action, "session_id", msg.SessionID)
 		// API commands are routed to local node
-		api.HandleLocalCommand(ctx, msg, sessionMgr, overflowMgr, eslClient, gatewaySelector, handoffMgr, bridgeURL)
+		api.HandleLocalCommand(ctx, msg, sessionMgr, overflowMgr, eslClient, gatewaySelector, handoffMgr, bridgeURL, cfg.InternalAPISecret)
 	})
 
 	// Register reconnect callback: reconcile orphan sessions after ESL reconnection
@@ -252,7 +303,7 @@ func main() {
 	}()
 
 	// HTTP server
-	router, err := api.NewRouter(cfg, routeRuntime, capacityMgr, overflowMgr, gatewayStore, gatewaySelector, handoffMgr, eslClient, sessionMgr, nodeID)
+	router, err := api.NewRouter(cfg, routeRuntime, capacityMgr, overflowMgr, gatewayStore, gatewaySelector, handoffMgr, clusterMgr, eslClient, sessionMgr, nodeID)
 	if err != nil {
 		slog.Error("Failed to build HTTP router", "err", err, "routing_config_path", cfg.RoutingConfigPath)
 		os.Exit(1)
@@ -275,6 +326,9 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigCh
+	if clusterMgr != nil {
+		_ = clusterMgr.SetState(context.Background(), cluster.NodeStateDraining, "process shutdown")
+	}
 	slog.Info("[Shutdown 1/5] HTTP server: rejecting new requests")
 	httpServer.SetKeepAlivesEnabled(false)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -283,6 +337,9 @@ func main() {
 
 	// T-19: Notify Bridge to prepare for shutdown (stop accepting new streams)
 	shutdownBridgeReq, _ := http.NewRequest("POST", bridgeURL+"/internal/shutdown", nil)
+	if cfg.InternalAPISecret != "" {
+		shutdownBridgeReq.Header.Set("X-Internal-Secret", cfg.InternalAPISecret)
+	}
 	shutdownBridgeClient := &http.Client{Timeout: 5 * time.Second}
 	if resp, err := shutdownBridgeClient.Do(shutdownBridgeReq); err != nil {
 		slog.Warn("Bridge shutdown notification failed (may be already down)", "err", err)
@@ -455,7 +512,7 @@ func startIVRSession(ctx context.Context, sessionMgr session.Store, gatewaySelec
 					if confirmed {
 						s.SetAIPaused(true)
 						bridgeURL := fmt.Sprintf("http://%s:%d", cfg.BridgeHost, cfg.BridgeInternalPort)
-						notifyBridgeHold(bridgeURL, "ai-pause", s.FSUUID)
+						notifyBridgeHold(bridgeURL, cfg.InternalAPISecret, "ai-pause", s.FSUUID)
 						if released, releaseErr := session.ReleaseServiceOwnership(s.Ctx, sessionMgr, s); releaseErr != nil {
 							slog.Error("Failed to persist service ownership release after confirmed IVR handoff", "session", s.SessionID, "err", releaseErr)
 						} else if released {
@@ -636,7 +693,7 @@ func tryActivateService(ctx context.Context, sessionMgr session.Store, capacityM
 	switch decision.Backend {
 	case routing.BackendSIPExtension:
 		s.SetAIPaused(true)
-		notifyBridgeHold(fmt.Sprintf("http://%s:%d", cfg.BridgeHost, cfg.BridgeInternalPort), "ai-pause", s.FSUUID)
+		notifyBridgeHold(fmt.Sprintf("http://%s:%d", cfg.BridgeHost, cfg.BridgeInternalPort), cfg.InternalAPISecret, "ai-pause", s.FSUUID)
 		if err := transferToExtensionSlot(ctx, eslClient, s, decision.Extension); err != nil {
 			slog.Error("Failed to transfer admitted call into SIP extension slot", "session_id", s.SessionID, "service", serviceName, "extension", decision.Extension, "err", err)
 			if released, releaseErr := session.ReleaseServiceOwnership(ctx, sessionMgr, s); releaseErr != nil {
@@ -734,7 +791,7 @@ func handleOverflowDecision(ctx context.Context, sessionMgr session.Store, capac
 		}
 		metrics.HumanFallbackTotal.WithLabelValues(decision.ServiceName, decision.TransferTarget).Inc()
 		s.SetAIPaused(true)
-		notifyBridgeHold(fmt.Sprintf("http://%s:%d", cfg.BridgeHost, cfg.BridgeInternalPort), "ai-pause", s.FSUUID)
+		notifyBridgeHold(fmt.Sprintf("http://%s:%d", cfg.BridgeHost, cfg.BridgeInternalPort), cfg.InternalAPISecret, "ai-pause", s.FSUUID)
 		if confirmed {
 			s.SetLifecycleState(session.StateTransferring, "", "overflow human fallback confirmed", time.Time{}, time.Time{})
 			if released, releaseErr := session.ReleaseServiceOwnership(ctx, sessionMgr, s); releaseErr != nil {
@@ -782,7 +839,7 @@ func handleOverflowDecision(ctx context.Context, sessionMgr session.Store, capac
 			return false
 		}
 		s.SetAIPaused(true)
-		notifyBridgeHold(fmt.Sprintf("http://%s:%d", cfg.BridgeHost, cfg.BridgeInternalPort), "ai-pause", s.FSUUID)
+		notifyBridgeHold(fmt.Sprintf("http://%s:%d", cfg.BridgeHost, cfg.BridgeInternalPort), cfg.InternalAPISecret, "ai-pause", s.FSUUID)
 		s.SetLifecycleState(session.StateQueued, decision.ServiceName, "service capacity exceeded", now, timeoutAt)
 		saveSessionState(ctx, sessionMgr, s)
 		if err := transferToQueueHold(ctx, eslClient, s, decision.QueueAnnouncement); err != nil {
@@ -894,6 +951,22 @@ func runSlotRegistrationRefresher(ctx context.Context, tick time.Duration, regis
 	}
 }
 
+func runLeaseRenewalLoop(ctx context.Context, tick time.Duration, capacityMgr *capacity.Manager) {
+	if capacityMgr == nil {
+		return
+	}
+	ticker := time.NewTicker(tick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			capacityMgr.RenewLeases()
+		}
+	}
+}
+
 func overflowTargetFromDecision(decision capacity.Decision) string {
 	if decision.TransferTarget != "" {
 		return decision.TransferTarget
@@ -982,7 +1055,7 @@ func onChannelHold(ctx context.Context, evt *esl.Event, sessionMgr session.Store
 
 	// Notify Bridge to pause gRPC send
 	bridgeURL := fmt.Sprintf("http://%s:%d", cfg.BridgeHost, cfg.BridgeInternalPort)
-	notifyBridgeHold(bridgeURL, "ai-pause", s.FSUUID)
+	notifyBridgeHold(bridgeURL, cfg.InternalAPISecret, "ai-pause", s.FSUUID)
 }
 
 // P-12: Resume AI streaming when PBX takes call off hold
@@ -995,13 +1068,17 @@ func onChannelUnhold(ctx context.Context, evt *esl.Event, sessionMgr session.Sto
 	slog.Info("CHANNEL_UNHOLD — AI resumed (PBX resume)", "session_id", s.SessionID)
 
 	bridgeURL := fmt.Sprintf("http://%s:%d", cfg.BridgeHost, cfg.BridgeInternalPort)
-	notifyBridgeHold(bridgeURL, "ai-resume", s.FSUUID)
+	notifyBridgeHold(bridgeURL, cfg.InternalAPISecret, "ai-resume", s.FSUUID)
 }
 
-func notifyBridgeHold(bridgeURL, action, uuid string) {
+func notifyBridgeHold(bridgeURL, internalSecret, action, uuid string) {
 	url := fmt.Sprintf("%s/internal/%s/%s", bridgeURL, action, uuid)
-	// R-06: Content-Type 명시 (일부 HTTP 프레임워크 호환성)
-	resp, err := http.Post(url, "application/json", nil)
+	req, _ := http.NewRequest(http.MethodPost, url, nil)
+	req.Header.Set("Content-Type", "application/json")
+	if internalSecret != "" {
+		req.Header.Set("X-Internal-Secret", internalSecret)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		slog.Error("Bridge hold notification failed", "action", action, "uuid", uuid, "err", err)
 		return
@@ -1136,6 +1213,22 @@ func validateProdConfig(cfg *config.Config) {
 	}
 	if cfg.ESLPassword == "ClueCon" || cfg.ESLPassword == "" {
 		slog.Error("Production: ESL_PASSWORD must not be default 'ClueCon' or empty")
+		failed = true
+	}
+	if len(cfg.AdminControlKey) < 32 {
+		slog.Error("Production: ADMIN_CONTROL_KEY must be at least 32 characters", "current_len", len(cfg.AdminControlKey))
+		failed = true
+	}
+	if strings.Contains(strings.ToLower(cfg.AdminControlKey), "changeme") || strings.Contains(strings.ToLower(cfg.AdminControlKey), "placeholder") {
+		slog.Error("Production: ADMIN_CONTROL_KEY must not contain placeholder values")
+		failed = true
+	}
+	if len(cfg.InternalAPISecret) < 32 {
+		slog.Error("Production: INTERNAL_API_SECRET must be at least 32 characters", "current_len", len(cfg.InternalAPISecret))
+		failed = true
+	}
+	if strings.Contains(strings.ToLower(cfg.InternalAPISecret), "changeme") || strings.Contains(strings.ToLower(cfg.InternalAPISecret), "placeholder") {
+		slog.Error("Production: INTERNAL_API_SECRET must not contain placeholder values")
 		failed = true
 	}
 

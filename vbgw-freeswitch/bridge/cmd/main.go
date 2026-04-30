@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,6 +38,9 @@ func main() {
 		"internal_port", cfg.InternalPort,
 		"ai_grpc_addr", cfg.AIGrpcAddr,
 	)
+	if cfg.RuntimeProfile == "production" {
+		validateProdConfig(cfg)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -55,7 +59,7 @@ func main() {
 	defer grpcPool.Close()
 
 	// Initialize barge-in controller
-	bargeCtrl := barge.NewController(cfg.OrchestratorURL)
+	bargeCtrl := barge.NewController(cfg.OrchestratorURL, cfg.InternalAPISecret)
 
 	// Initialize WS server
 	wsServer := ws.NewServer(ctx, vadEngine, grpcPool, bargeCtrl, cfg.WSAllowedOrigins)
@@ -72,7 +76,7 @@ func main() {
 	// Internal HTTP server (port 8091 — Orchestrator connects here)
 	internalHTTP := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.InternalPort),
-		Handler: wsServer.InternalHandler(),
+		Handler: wsServer.InternalHandler(cfg.InternalAPISecret),
 	}
 
 	// Start servers
@@ -122,4 +126,20 @@ func setupLogging(level string) {
 		logLevel = slog.LevelInfo
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))
+}
+
+func validateProdConfig(cfg *config.Config) {
+	failed := false
+	if len(cfg.InternalAPISecret) < 32 {
+		slog.Error("Production: INTERNAL_API_SECRET must be at least 32 characters", "current_len", len(cfg.InternalAPISecret))
+		failed = true
+	}
+	if strings.Contains(strings.ToLower(cfg.InternalAPISecret), "changeme") || strings.Contains(strings.ToLower(cfg.InternalAPISecret), "placeholder") {
+		slog.Error("Production: INTERNAL_API_SECRET must not contain placeholder values")
+		failed = true
+	}
+	if failed {
+		slog.Error("Production security validation FAILED — refusing to start")
+		os.Exit(1)
+	}
 }

@@ -54,18 +54,29 @@ func (s *Selector) selectInternal(includeStandbyFallback bool) (Selection, error
 	selection.Primary = primary
 	selection.Standby = standby
 
+	if primaryOK && primary.OperatorState == "standby" {
+		if s.policy.AllowStandby && standbyOK && standby.HealthClass == HealthHealthy && standby.OperatorState != "standby" {
+			selection.SelectedGateway = s.standbyGateway
+			selection.GatewayOrder = []string{s.standbyGateway}
+			selection.Reason = ReasonPrimaryOperatorStandby
+			return selection, nil
+		}
+		selection.Reason = ReasonPrimaryOperatorStandby
+		return selection, fmt.Errorf("primary gateway %s is in operator standby", s.primaryGateway)
+	}
+
 	if primaryOK && primary.HealthClass == HealthHealthy {
 		selection.SelectedGateway = s.primaryGateway
 		selection.GatewayOrder = []string{s.primaryGateway}
 		selection.Reason = ReasonPrimaryHealthy
-		if includeStandbyFallback && s.policy.AllowStandby && standbyOK && standby.HealthClass == HealthHealthy {
+		if includeStandbyFallback && s.policy.AllowStandby && standbyOK && standby.HealthClass == HealthHealthy && standby.OperatorState != "standby" {
 			selection.GatewayOrder = append(selection.GatewayOrder, s.standbyGateway)
 			selection.Reason = ReasonPrimaryHealthyWithStandby
 		}
 		return selection, nil
 	}
 
-	if s.policy.AllowStandby && standbyOK && standby.HealthClass == HealthHealthy {
+	if s.policy.AllowStandby && standbyOK && standby.HealthClass == HealthHealthy && standby.OperatorState != "standby" {
 		selection.SelectedGateway = s.standbyGateway
 		selection.GatewayOrder = []string{s.standbyGateway}
 		selection.Reason = ReasonStandbySelected

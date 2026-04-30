@@ -72,6 +72,9 @@ type GatewayState struct {
 	ObservedAtUnix int64
 	FreshnessTTL   int64
 	Producer       string
+	OperatorState  string
+	OperatorReason string
+	OperatorAtUnix int64
 }
 
 const (

@@ -229,6 +229,29 @@ func (m *Manager) RefreshMetrics(now time.Time) {
 	}
 }
 
+func (m *Manager) FlushService(serviceName string) []QueueEntry {
+	if m == nil || serviceName == "" {
+		return nil
+	}
+	if m.redis != nil {
+		return m.flushServiceRedis(context.Background(), serviceName)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	queue := append([]QueueEntry(nil), m.byService[serviceName]...)
+	if len(queue) == 0 {
+		return nil
+	}
+	delete(m.byService, serviceName)
+	for _, entry := range queue {
+		delete(m.bySession, entry.SessionID)
+	}
+	m.updateMetricsLocked(serviceName)
+	return queue
+}
+
 func (m *Manager) updateMetricsLocked(serviceName string) {
 	depth := 0
 	oldest := 0.0
@@ -354,6 +377,32 @@ func (m *Manager) snapshotRedis(ctx context.Context, serviceName string, now tim
 		}
 	}
 	return snapshotFromQueue(serviceName, queue, now)
+}
+
+func (m *Manager) flushServiceRedis(ctx context.Context, serviceName string) []QueueEntry {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ids, err := m.redis.ZRange(ctx, queueKey(serviceName), 0, -1).Result()
+	if err != nil || len(ids) == 0 {
+		return nil
+	}
+
+	entries := make([]QueueEntry, 0, len(ids))
+	pipe := m.redis.Pipeline()
+	pipe.Del(ctx, queueKey(serviceName))
+	for _, sessionID := range ids {
+		if entry, ok := m.loadEntry(ctx, sessionID); ok {
+			entries = append(entries, entry)
+		}
+		pipe.Del(ctx, sessionKey(sessionID))
+		pipe.Del(ctx, queueSessionServiceKey(sessionID))
+		pipe.Del(ctx, claimKey(sessionID))
+	}
+	_, _ = pipe.Exec(ctx)
+	metrics.ServiceQueueDepth.WithLabelValues(serviceName).Set(0)
+	metrics.QueueWaitSeconds.WithLabelValues(serviceName).Set(0)
+	return entries
 }
 
 func (m *Manager) snapshotsRedis(ctx context.Context, now time.Time) []QueueSnapshot {

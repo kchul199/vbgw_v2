@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"vbgw-orchestrator/internal/capacity"
+	"vbgw-orchestrator/internal/cluster"
 	"vbgw-orchestrator/internal/config"
 	"vbgw-orchestrator/internal/esl"
 	"vbgw-orchestrator/internal/interconnect"
@@ -31,13 +32,14 @@ import (
 )
 
 // NewRouter creates the HTTP router with all endpoints registered.
-func NewRouter(cfg *config.Config, runtime *routing.Runtime, capacityMgr *capacity.Manager, overflowMgr *overflow.Manager, gatewayStore *interconnect.Store, gatewaySelector *interconnect.Selector, handoffMgr *interconnect.HandoffManager, eslClient esl.Commander, sessions session.Store, nodeID string) (http.Handler, error) {
+func NewRouter(cfg *config.Config, runtime *routing.Runtime, capacityMgr *capacity.Manager, overflowMgr *overflow.Manager, gatewayStore *interconnect.Store, gatewaySelector *interconnect.Selector, handoffMgr *interconnect.HandoffManager, clusterMgr *cluster.Manager, eslClient esl.Commander, sessions session.Store, nodeID string) (http.Handler, error) {
 	r := chi.NewRouter()
 
 	bridgeURL := "http://" + cfg.BridgeHost + ":" + itoa(cfg.BridgeInternalPort)
 	httpClient := &http.Client{Timeout: 5 * time.Second}
+	operations := NewOperationRegistry(200)
 
-	healthHandler := NewHealthHandler(eslClient, sessions, bridgeURL)
+	healthHandler := NewHealthHandler(eslClient, sessions, bridgeURL, cfg.InternalAPISecret)
 	callsHandler := &CallsHandler{
 		ESL:                 eslClient,
 		Sessions:            sessions,
@@ -47,18 +49,20 @@ func NewRouter(cfg *config.Config, runtime *routing.Runtime, capacityMgr *capaci
 		NodeID:              nodeID,
 	}
 	controlHandler := &ControlHandler{
-		ESL:             eslClient,
-		Sessions:        sessions,
-		GatewaySelector: gatewaySelector,
-		HandoffManager:  handoffMgr,
-		OverflowManager: overflowMgr,
-		BridgeURL:       bridgeURL,
-		httpClient:      httpClient,
-		NodeID:          nodeID,
+		ESL:               eslClient,
+		Sessions:          sessions,
+		GatewaySelector:   gatewaySelector,
+		HandoffManager:    handoffMgr,
+		OverflowManager:   overflowMgr,
+		BridgeURL:         bridgeURL,
+		InternalAPISecret: cfg.InternalAPISecret,
+		httpClient:        httpClient,
+		NodeID:            nodeID,
 	}
 	statsHandler := &StatsHandler{ESL: eslClient, Sessions: sessions}
 	dialplanHandler := NewDialplanHandler(cfg.AIRouteNumbers, runtime, capacityMgr)
-	adminHandler := NewAdminHandler(sessions, capacityMgr, overflowMgr, gatewayStore, gatewaySelector, runtime)
+	adminHandler := NewAdminHandler(sessions, capacityMgr, overflowMgr, gatewayStore, gatewaySelector, eslClient, operations, runtime)
+	adminHandler.SetClusterManager(clusterMgr)
 	baseMetricsHandler := promhttp.Handler()
 	metricsHandler := baseMetricsHandler
 	if gatewayStore != nil || capacityMgr != nil || overflowMgr != nil {
@@ -93,12 +97,18 @@ func NewRouter(cfg *config.Config, runtime *routing.Runtime, capacityMgr *capaci
 
 		// Admin Dashboard APIs
 		r.Get("/api/v1/admin/sessions/active", adminHandler.GetActiveSessions)
+		r.Get("/api/v1/admin/services", adminHandler.GetServices)
+		r.Get("/api/v1/admin/services/{name}", adminHandler.GetService)
 		r.Get("/api/v1/admin/services/capacity", adminHandler.GetServiceCapacity)
 		r.Get("/api/v1/admin/slots", adminHandler.GetSlots)
 		r.Get("/api/v1/admin/queues", adminHandler.GetQueues)
 		r.Get("/api/v1/admin/gateways", adminHandler.GetGatewayHealth)
+		r.Get("/api/v1/admin/cluster/nodes", adminHandler.GetClusterNodes)
+		r.Get("/api/v1/admin/cluster/leases", adminHandler.GetClusterLeases)
+		r.Get("/api/v1/admin/cluster/compatibility", adminHandler.GetClusterCompatibility)
 		r.Get("/api/v1/admin/routing/config", adminHandler.GetRoutingConfig)
-		r.Post("/api/v1/admin/routing/reload", adminHandler.ReloadRoutingConfig)
+		r.Get("/api/v1/admin/operations", adminHandler.GetOperations)
+		r.Get("/api/v1/admin/operations/{id}", adminHandler.GetOperation)
 
 		// Prometheus metrics (behind auth to prevent info leak)
 		r.Handle("/metrics", metricsHandler)
@@ -134,10 +144,27 @@ func NewRouter(cfg *config.Config, runtime *routing.Runtime, capacityMgr *capaci
 		r.Post("/api/v1/calls/unbridge", controlHandler.UnbridgeCalls)
 	})
 
+	r.Group(func(r chi.Router) {
+		r.Use(TracingMiddleware)
+		r.Use(MetricsMiddleware)
+		r.Use(RateLimitMiddleware(cfg.RateLimitRPS, cfg.RateLimitBurst))
+		r.Use(ControlAuthMiddleware(cfg.JWTSecret, cfg.AdminControlKey))
+
+		r.Post("/api/v1/admin/routing/reload", adminHandler.ReloadRoutingConfig)
+		r.Post("/api/v1/admin/services/{name}/pause", adminHandler.PauseService)
+		r.Post("/api/v1/admin/services/{name}/resume", adminHandler.ResumeService)
+		r.Post("/api/v1/admin/services/{name}/drain", adminHandler.DrainService)
+		r.Post("/api/v1/admin/queues/{name}/flush", adminHandler.FlushQueue)
+		r.Post("/api/v1/admin/slots/{slotID}/force-release", adminHandler.ForceReleaseSlot)
+		r.Post("/api/v1/admin/gateways/{name}/standby", adminHandler.SetGatewayStandby)
+		r.Post("/api/v1/admin/cluster/nodes/{id}/drain", adminHandler.DrainNode)
+		r.Post("/api/v1/admin/cluster/nodes/{id}/resume", adminHandler.ResumeNode)
+	})
+
 	// Internal endpoints (loopback only — PBX/Bridge → Orchestrator)
 	r.Group(func(r chi.Router) {
 		r.Use(LoopbackOnlyMiddleware)
-		r.Post("/internal/barge-in/{uuid}", controlHandler.BargeIn)
+		r.With(SharedSecretMiddleware(cfg.InternalAPISecret)).Post("/internal/barge-in/{uuid}", controlHandler.BargeIn)
 
 		// Dynamic Dialplan (mod_xml_curl)
 		r.Post("/api/v1/fs/dialplan", dialplanHandler.GenerateDialplan)

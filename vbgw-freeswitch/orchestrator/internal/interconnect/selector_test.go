@@ -91,3 +91,30 @@ func TestSelectorSelectTransfer_PrimaryHealthyWithStandbyFallback(t *testing.T) 
 		t.Fatalf("expected primary then standby, got %+v", selection.GatewayOrder)
 	}
 }
+
+func TestSelectorSelectOriginate_PrimaryOperatorStandby(t *testing.T) {
+	store := NewStore()
+	now := time.Now()
+	store.Update(BuildGatewayState("pbx-main", true, "pbx-main REGED", "test", now, 90*time.Second))
+	store.Update(BuildGatewayState("pbx-standby", false, "pbx-standby NOREG", "test", now, 90*time.Second))
+	if !store.SetManualStandby("pbx-main", "maintenance", true) {
+		t.Fatal("expected manual standby to be applied")
+	}
+
+	selector := NewSelector(store, "pbx-main", "pbx-standby", SelectionPolicy{
+		PreferPrimary:     true,
+		AllowStandby:      true,
+		FailFastWhenStale: true,
+	})
+
+	selection, err := selector.SelectOriginate()
+	if err != nil {
+		t.Fatalf("expected standby selection, got %v", err)
+	}
+	if selection.SelectedGateway != "pbx-standby" {
+		t.Fatalf("expected standby, got %s", selection.SelectedGateway)
+	}
+	if selection.Reason != ReasonPrimaryOperatorStandby {
+		t.Fatalf("expected operator standby reason, got %s", selection.Reason)
+	}
+}

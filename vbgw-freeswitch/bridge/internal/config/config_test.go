@@ -12,6 +12,8 @@ func TestLoad_BridgeDefaults(t *testing.T) {
 	os.Unsetenv("BRIDGE_INTERNAL_PORT")
 	os.Unsetenv("AI_GRPC_ADDR")
 	os.Unsetenv("WS_ALLOWED_ORIGINS")
+	os.Unsetenv("INTERNAL_API_SECRET")
+	os.Unsetenv("RUNTIME_PROFILE")
 
 	cfg := Load()
 
@@ -30,16 +32,23 @@ func TestLoad_BridgeDefaults(t *testing.T) {
 	if cfg.GrpcMaxRetries != 5 {
 		t.Fatalf("expected GRPC_MAX_RETRIES=5, got %d", cfg.GrpcMaxRetries)
 	}
+	if cfg.RuntimeProfile != "dev" {
+		t.Fatalf("expected RUNTIME_PROFILE=dev, got %s", cfg.RuntimeProfile)
+	}
 }
 
 func TestLoad_BridgeOverrides(t *testing.T) {
 	os.Setenv("WS_PORT", "9090")
 	os.Setenv("AI_GRPC_ADDR", "ai.example.com:50051")
 	os.Setenv("AI_GRPC_TLS", "true")
+	os.Setenv("INTERNAL_API_SECRET", "secret-123")
+	os.Setenv("RUNTIME_PROFILE", "production")
 	defer func() {
 		os.Unsetenv("WS_PORT")
 		os.Unsetenv("AI_GRPC_ADDR")
 		os.Unsetenv("AI_GRPC_TLS")
+		os.Unsetenv("INTERNAL_API_SECRET")
+		os.Unsetenv("RUNTIME_PROFILE")
 	}()
 
 	cfg := Load()
@@ -52,6 +61,12 @@ func TestLoad_BridgeOverrides(t *testing.T) {
 	}
 	if !cfg.AIGrpcTLS {
 		t.Fatal("expected AI_GRPC_TLS=true")
+	}
+	if cfg.InternalAPISecret != "secret-123" {
+		t.Fatalf("expected internal secret override, got %q", cfg.InternalAPISecret)
+	}
+	if cfg.RuntimeProfile != "production" {
+		t.Fatalf("expected production profile, got %s", cfg.RuntimeProfile)
 	}
 }
 

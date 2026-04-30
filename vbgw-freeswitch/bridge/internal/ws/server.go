@@ -13,6 +13,7 @@ package ws
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -109,6 +110,15 @@ func makeOriginChecker(allowedOrigins []string) func(r *http.Request) bool {
 	}
 }
 
+func (s *Server) sessionCount() int {
+	count := 0
+	s.sessions.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	return count
+}
+
 // HandleAudio handles the WS upgrade for /audio/{uuid}.
 func (s *Server) HandleAudio(w http.ResponseWriter, r *http.Request) {
 	// Extract UUID from path: /audio/{uuid}
@@ -164,34 +174,54 @@ func (s *Server) ResumeAI(uuid string) {
 }
 
 // InternalHandler creates an HTTP handler for internal Bridge API.
-func (s *Server) InternalHandler() http.Handler {
+func (s *Server) InternalHandler(internalSecret string) http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/internal/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"healthy"}`))
-	})
+	requireSecret := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if internalSecret == "" || subtle.ConstantTimeCompare([]byte(internalSecret), []byte(r.Header.Get("X-Internal-Secret"))) != 1 {
+				http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+				return
+			}
+			next(w, r)
+		}
+	}
 
-	mux.HandleFunc("/internal/ai-pause/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/internal/health", requireSecret(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"status":          "healthy",
+			"grpc_connected":  s.grpcClientPool != nil && s.grpcClientPool.IsConnected(),
+			"active_sessions": s.sessionCount(),
+		}
+		if connected, _ := resp["grpc_connected"].(bool); !connected {
+			resp["status"] = "degraded"
+			w.WriteHeader(http.StatusServiceUnavailable)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	mux.HandleFunc("/internal/ai-pause/", requireSecret(func(w http.ResponseWriter, r *http.Request) {
 		uuid := extractUUID(r.URL.Path, "/internal/ai-pause/")
 		s.PauseAI(uuid)
 		w.WriteHeader(http.StatusOK)
-	})
+	}))
 
-	mux.HandleFunc("/internal/ai-resume/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/internal/ai-resume/", requireSecret(func(w http.ResponseWriter, r *http.Request) {
 		uuid := extractUUID(r.URL.Path, "/internal/ai-resume/")
 		s.ResumeAI(uuid)
 		w.WriteHeader(http.StatusOK)
-	})
+	}))
 
 	// T-19: Shutdown notification from Orchestrator
-	mux.HandleFunc("/internal/shutdown", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/internal/shutdown", requireSecret(func(w http.ResponseWriter, r *http.Request) {
 		slog.Info("Shutdown notification received from Orchestrator")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"shutting_down"}`))
-	})
+	}))
 
-	mux.HandleFunc("/internal/dtmf/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/internal/dtmf/", requireSecret(func(w http.ResponseWriter, r *http.Request) {
 		uuid := extractUUID(r.URL.Path, "/internal/dtmf/")
 
 		var body struct {
@@ -210,7 +240,7 @@ func (s *Server) InternalHandler() http.Handler {
 			}
 		}
 		w.WriteHeader(http.StatusOK)
-	})
+	}))
 
 	return mux
 }
