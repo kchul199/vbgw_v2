@@ -11,6 +11,7 @@
 package api
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -21,6 +22,26 @@ import (
 	"strings"
 	"time"
 )
+
+type authContextKey string
+
+const principalContextKey authContextKey = "auth_principal"
+
+type AuthPrincipal struct {
+	Type    string `json:"type"`
+	Subject string `json:"subject"`
+	Scope   string `json:"scope,omitempty"`
+}
+
+func PrincipalFromContext(ctx context.Context) AuthPrincipal {
+	if ctx == nil {
+		return AuthPrincipal{}
+	}
+	if principal, ok := ctx.Value(principalContextKey).(AuthPrincipal); ok {
+		return principal
+	}
+	return AuthPrincipal{}
+}
 
 // JWTClaims represents the payload of a VBGW JWT token.
 type JWTClaims struct {
@@ -50,7 +71,12 @@ func JWTAuthMiddleware(jwtSecret, legacyAPIKey string) func(http.Handler) http.H
 
 			// Path 1: Legacy static API Key (backward compatible)
 			if token == legacyAPIKey {
-				next.ServeHTTP(w, r)
+				principal := AuthPrincipal{
+					Type:    "legacy_api_key",
+					Subject: "legacy-admin-api-key",
+					Scope:   "admin",
+				}
+				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey, principal)))
 				return
 			}
 
@@ -68,7 +94,63 @@ func JWTAuthMiddleware(jwtSecret, legacyAPIKey string) func(http.Handler) http.H
 			}
 
 			slog.Debug("JWT authenticated", "sub", claims.Sub, "scope", claims.Scope)
-			next.ServeHTTP(w, r)
+			principal := AuthPrincipal{
+				Type:    "jwt",
+				Subject: claims.Sub,
+				Scope:   claims.Scope,
+			}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey, principal)))
+		})
+	}
+}
+
+func ControlAuthMiddleware(jwtSecret, controlKey string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" {
+				http.Error(w, `{"error":"authorization header required"}`, http.StatusUnauthorized)
+				return
+			}
+
+			token := strings.TrimPrefix(authHeader, "Bearer ")
+			if token == authHeader {
+				http.Error(w, `{"error":"bearer token required"}`, http.StatusUnauthorized)
+				return
+			}
+
+			if controlKey != "" && token == controlKey {
+				principal := AuthPrincipal{
+					Type:    "control_key",
+					Subject: "admin-control-key",
+					Scope:   "admin control",
+				}
+				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey, principal)))
+				return
+			}
+
+			if jwtSecret == "" {
+				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+				return
+			}
+
+			claims, err := ValidateJWT(token, jwtSecret)
+			if err != nil {
+				slog.Warn("Control JWT validation failed", "err", err, "remote", r.RemoteAddr)
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusUnauthorized)
+				return
+			}
+			if !scopeIncludes(claims.Scope, "control") && !scopeIncludes(claims.Scope, "admin") {
+				http.Error(w, `{"error":"insufficient scope"}`, http.StatusForbidden)
+				return
+			}
+
+			principal := AuthPrincipal{
+				Type:    "jwt",
+				Subject: claims.Sub,
+				Scope:   claims.Scope,
+			}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey, principal)))
 		})
 	}
 }
@@ -162,4 +244,18 @@ func base64URLEncode(data []byte) string {
 
 func base64URLDecode(s string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(s)
+}
+
+func scopeIncludes(scope, want string) bool {
+	if want == "" {
+		return false
+	}
+	for _, part := range strings.FieldsFunc(strings.ToLower(scope), func(r rune) bool {
+		return r == ',' || r == ' ' || r == ';'
+	}) {
+		if part == strings.ToLower(want) {
+			return true
+		}
+	}
+	return false
 }

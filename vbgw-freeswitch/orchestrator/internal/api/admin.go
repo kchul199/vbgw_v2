@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"vbgw-orchestrator/internal/capacity"
+	"vbgw-orchestrator/internal/cluster"
+	"vbgw-orchestrator/internal/esl"
 	"vbgw-orchestrator/internal/interconnect"
 	"vbgw-orchestrator/internal/overflow"
 	"vbgw-orchestrator/internal/routing"
@@ -25,20 +27,32 @@ type AdminHandler struct {
 	gatewayStore    *interconnect.Store
 	gatewaySelector *interconnect.Selector
 	routeRuntime    *routing.Runtime
+	eslClient       esl.Commander
+	operations      *OperationRegistry
+	clusterMgr      *cluster.Manager
 }
 
-func NewAdminHandler(sessionMgr session.Store, capacityMgr *capacity.Manager, overflowMgr *overflow.Manager, gatewayStore *interconnect.Store, gatewaySelector *interconnect.Selector, routeRuntime ...*routing.Runtime) *AdminHandler {
+func NewAdminHandler(sessionMgr session.Store, capacityMgr *capacity.Manager, overflowMgr *overflow.Manager, gatewayStore *interconnect.Store, gatewaySelector *interconnect.Selector, eslClient esl.Commander, operations *OperationRegistry, routeRuntime ...*routing.Runtime) *AdminHandler {
 	h := &AdminHandler{
 		sessionMgr:      sessionMgr,
 		capacityMgr:     capacityMgr,
 		overflowMgr:     overflowMgr,
 		gatewayStore:    gatewayStore,
 		gatewaySelector: gatewaySelector,
+		eslClient:       eslClient,
+		operations:      operations,
 	}
 	if len(routeRuntime) > 0 {
 		h.routeRuntime = routeRuntime[0]
 	}
 	return h
+}
+
+func (h *AdminHandler) SetClusterManager(clusterMgr *cluster.Manager) {
+	if h == nil {
+		return
+	}
+	h.clusterMgr = clusterMgr
 }
 
 // GetActiveSessions fetches a comprehensive list of all active sessions across the cluster.
@@ -114,6 +128,10 @@ func (h *AdminHandler) GetQueues(w http.ResponseWriter, r *http.Request) {
 
 // GetServiceCapacity exposes configured logical service capacity and local slot usage.
 func (h *AdminHandler) GetServiceCapacity(w http.ResponseWriter, r *http.Request) {
+	h.GetServices(w, r)
+}
+
+func (h *AdminHandler) GetServices(w http.ResponseWriter, r *http.Request) {
 	snapshots := []capacity.ServiceSnapshot{}
 	if h.capacityMgr != nil {
 		snapshots = h.capacityMgr.Snapshots()
@@ -222,6 +240,64 @@ func (h *AdminHandler) GetRoutingConfig(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+func (h *AdminHandler) GetClusterNodes(w http.ResponseWriter, r *http.Request) {
+	nodes := []cluster.NodeHeartbeat{}
+	if h.clusterMgr != nil {
+		if snapshots, err := h.clusterMgr.ListNodes(r.Context()); err == nil {
+			nodes = snapshots
+		}
+	}
+	payload := map[string]interface{}{
+		"status": "success",
+		"count":  len(nodes),
+		"data":   nodes,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (h *AdminHandler) GetClusterLeases(w http.ResponseWriter, r *http.Request) {
+	leases := []cluster.LeaseRecord{}
+	if h.clusterMgr != nil {
+		if snapshots, err := h.clusterMgr.ListLeases(r.Context()); err == nil {
+			leases = snapshots
+		}
+	}
+	payload := map[string]interface{}{
+		"status": "success",
+		"count":  len(leases),
+		"data":   leases,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (h *AdminHandler) GetClusterCompatibility(w http.ResponseWriter, r *http.Request) {
+	if h.clusterMgr == nil {
+		http.Error(w, `{"error":"cluster manager unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	expectedRoutingVersion := 0
+	if h.routeRuntime != nil && h.routeRuntime.Config != nil {
+		expectedRoutingVersion = h.routeRuntime.Config.Version
+	}
+	report, err := h.clusterMgr.CompatibilityReport(r.Context(), expectedRoutingVersion)
+	if err != nil {
+		http.Error(w, `{"error":"compatibility lookup failed"}`, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "success",
+		"data":   report,
+	})
+}
+
 // ReloadRoutingConfig triggers a hot-reload of routing.yaml from disk.
 func (h *AdminHandler) ReloadRoutingConfig(w http.ResponseWriter, r *http.Request) {
 	if h.routeRuntime == nil {
@@ -229,7 +305,8 @@ func (h *AdminHandler) ReloadRoutingConfig(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := h.routeRuntime.Reload(); err != nil {
+	nextCfg, err := h.routeRuntime.PreviewReload()
+	if err != nil {
 		slog.Error("Routing config reload failed", "err", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -240,6 +317,23 @@ func (h *AdminHandler) ReloadRoutingConfig(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if h.clusterMgr != nil {
+		report, compatErr := h.clusterMgr.CompatibilityReport(r.Context(), nextCfg.Version)
+		if compatErr != nil {
+			http.Error(w, `{"error":"compatibility lookup failed"}`, http.StatusInternalServerError)
+			return
+		}
+		if !report.Compatible {
+			writeJSON(w, http.StatusConflict, map[string]interface{}{
+				"status": "failed",
+				"error":  "cluster compatibility gate failed",
+				"data":   report,
+			})
+			return
+		}
+	}
+
+	h.routeRuntime.Apply(nextCfg)
 	slog.Info("Routing config reloaded successfully", "version", h.routeRuntime.Config.Version)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

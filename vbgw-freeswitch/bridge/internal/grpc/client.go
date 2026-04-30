@@ -206,6 +206,15 @@ func (p *Pool) Close() {
 	}
 }
 
+func (p *Pool) IsConnected() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.conn != nil && p.client != nil
+}
+
 // streamSendLoop reads from sendCh and sends AudioChunk to gRPC.
 func (p *Pool) streamSendLoop(s *Stream) {
 	// T-04: Always CloseSend on exit to notify server that send is done

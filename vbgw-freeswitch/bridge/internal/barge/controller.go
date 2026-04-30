@@ -23,13 +23,15 @@ import (
 // Controller manages barge-in flow from AI clear_buffer to FS uuid_break.
 type Controller struct {
 	orchestratorURL string
+	internalSecret  string
 	httpClient      *http.Client
 }
 
 // NewController creates a barge-in controller.
-func NewController(orchestratorURL string) *Controller {
+func NewController(orchestratorURL, internalSecret string) *Controller {
 	return &Controller{
 		orchestratorURL: orchestratorURL,
+		internalSecret:  internalSecret,
 		httpClient:      &http.Client{Timeout: 3 * time.Second},
 	}
 }
@@ -50,6 +52,9 @@ func (c *Controller) HandleClearBuffer(ctx context.Context, uuid string, ttsCh c
 	if err != nil {
 		slog.Error("Barge-in request creation failed", "uuid", uuid, "err", err)
 		return
+	}
+	if c.internalSecret != "" {
+		req.Header.Set("X-Internal-Secret", c.internalSecret)
 	}
 
 	resp, err := c.httpClient.Do(req)

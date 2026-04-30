@@ -51,3 +51,34 @@ func TestManagerEnqueueRemoveAndSnapshot(t *testing.T) {
 		t.Fatalf("expected remaining head s2, got %+v ok=%v", peek, ok)
 	}
 }
+
+func TestManagerFlushService(t *testing.T) {
+	mgr := NewManager()
+	now := time.Now()
+	if !mgr.Enqueue(QueueEntry{
+		SessionID:      "s1",
+		ServiceName:    "bot-main",
+		QueueOnTimeout: "busy",
+		EnqueuedAt:     now,
+		TimeoutAt:      now.Add(10 * time.Second),
+	}) {
+		t.Fatal("expected enqueue to succeed")
+	}
+	if !mgr.Enqueue(QueueEntry{
+		SessionID:      "s2",
+		ServiceName:    "bot-main",
+		QueueOnTimeout: "busy",
+		EnqueuedAt:     now.Add(time.Second),
+		TimeoutAt:      now.Add(11 * time.Second),
+	}) {
+		t.Fatal("expected enqueue to succeed")
+	}
+
+	flushed := mgr.FlushService("bot-main")
+	if len(flushed) != 2 {
+		t.Fatalf("expected 2 flushed entries, got %d", len(flushed))
+	}
+	if snapshot := mgr.Snapshot("bot-main", time.Now()); snapshot.Depth != 0 {
+		t.Fatalf("expected empty queue after flush, got %+v", snapshot)
+	}
+}

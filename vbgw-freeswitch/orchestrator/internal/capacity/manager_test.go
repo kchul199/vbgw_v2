@@ -275,3 +275,69 @@ func TestManagerStickyCallerUsesStableSlot(t *testing.T) {
 		t.Fatalf("expected sticky caller to reuse same slot, got %q then %q", first.SlotID, second.SlotID)
 	}
 }
+
+func TestManagerPauseAndResumeService(t *testing.T) {
+	mgr := NewManager(&routing.Config{
+		Version: 1,
+		Defaults: routing.Defaults{
+			OnUnknownEntry: routing.UnknownStaticFallback,
+		},
+		Services: []routing.ServiceRoute{{
+			Name:    "bot-main",
+			Enabled: true,
+			Capacity: routing.Capacity{
+				MaxConcurrent:  1,
+				Allocator:      routing.AllocatorRoundRobin,
+				OverflowPolicy: routing.OverflowBusy,
+			},
+		}},
+	})
+
+	if !mgr.PauseService("bot-main", "maintenance") {
+		t.Fatal("expected service pause to succeed")
+	}
+	decision := mgr.Preview("bot-main")
+	if decision.Allowed || decision.Reason != "service paused" {
+		t.Fatalf("expected paused service to reject new admits, got %+v", decision)
+	}
+	if !mgr.ResumeService("bot-main") {
+		t.Fatal("expected service resume to succeed")
+	}
+	decision = mgr.Preview("bot-main")
+	if !decision.Allowed {
+		t.Fatalf("expected resumed service to allow admits, got %+v", decision)
+	}
+}
+
+func TestManagerForceReleaseSlot(t *testing.T) {
+	mgr := NewManager(&routing.Config{
+		Version: 1,
+		Defaults: routing.Defaults{
+			OnUnknownEntry: routing.UnknownStaticFallback,
+		},
+		Services: []routing.ServiceRoute{{
+			Name:    "bot-main",
+			Enabled: true,
+			Capacity: routing.Capacity{
+				MaxConcurrent:  1,
+				Allocator:      routing.AllocatorRoundRobin,
+				OverflowPolicy: routing.OverflowBusy,
+			},
+		}},
+	})
+
+	decision := mgr.Admit("sess-1", "bot-main")
+	if !decision.Allowed {
+		t.Fatalf("expected admit, got %+v", decision)
+	}
+	serviceName, sessionID, ok := mgr.ForceReleaseSlot(decision.SlotID)
+	if !ok {
+		t.Fatal("expected force release to succeed")
+	}
+	if serviceName != "bot-main" || sessionID != "sess-1" {
+		t.Fatalf("unexpected force release result: service=%s session=%s", serviceName, sessionID)
+	}
+	if preview := mgr.Preview("bot-main"); !preview.Allowed {
+		t.Fatalf("expected slot to become available after force release, got %+v", preview)
+	}
+}

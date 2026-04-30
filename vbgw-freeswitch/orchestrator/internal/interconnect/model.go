@@ -21,6 +21,7 @@ const (
 	ReasonPrimaryStaleBestEffort    = "primary_stale_best_effort"
 	ReasonPrimaryMissingBestEffort  = "primary_snapshot_missing_best_effort"
 	ReasonFailFastPrimaryStale      = "fail_fast_primary_stale"
+	ReasonPrimaryOperatorStandby    = "primary_operator_standby"
 	ReasonNoHealthyGateway          = "no_healthy_gateway"
 
 	DecisionKindOriginate = "originate"

@@ -1,12 +1,14 @@
 package capacity
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
 	"sort"
 	"sync"
 	"time"
 
+	"vbgw-orchestrator/internal/cluster"
 	"vbgw-orchestrator/internal/metrics"
 	"vbgw-orchestrator/internal/routing"
 	"vbgw-orchestrator/internal/slots"
@@ -41,6 +43,12 @@ type SlotSnapshot struct {
 	Backend        string    `json:"backend"`
 	Extension      string    `json:"extension,omitempty"`
 	Registered     bool      `json:"registered"`
+	OwnerNodeID    string    `json:"owner_node_id,omitempty"`
+	LocalOwner     bool      `json:"local_owner,omitempty"`
+	LeaseRenewedAt time.Time `json:"lease_renewed_at,omitempty"`
+	LeaseTTLMS     int64     `json:"lease_ttl_ms,omitempty"`
+	Stale          bool      `json:"stale,omitempty"`
+	StaleReason    string    `json:"stale_reason,omitempty"`
 	LastSeenAt     time.Time `json:"last_seen_at,omitempty"`
 	LastReleasedAt time.Time `json:"last_released_at,omitempty"`
 }
@@ -54,6 +62,9 @@ type ServiceSnapshot struct {
 	RegisteredSlots     int            `json:"registered_slots"`
 	RequireRegistered   bool           `json:"require_registered"`
 	Allocator           string         `json:"allocator"`
+	ControlState        string         `json:"control_state"`
+	ControlReason       string         `json:"control_reason,omitempty"`
+	ControlUpdatedAt    time.Time      `json:"control_updated_at,omitempty"`
 	OverflowPolicy      string         `json:"overflow_policy"`
 	TransferTarget      string         `json:"transfer_target,omitempty"`
 	OverflowService     string         `json:"overflow_service,omitempty"`
@@ -78,6 +89,9 @@ type serviceState struct {
 	maxConcurrent     int
 	requireRegistered bool
 	allocator         string
+	controlState      string
+	controlReason     string
+	controlUpdatedAt  time.Time
 	overflowPolicy    string
 	transferTarget    string
 	overflowService   string
@@ -94,7 +108,21 @@ type Manager struct {
 	mu       sync.Mutex
 	services map[string]*serviceState
 	registry *slots.Registry
+	leases   *cluster.LeaseStore
+	node     nodeStateProvider
 }
+
+type nodeStateProvider interface {
+	CurrentState() string
+	BlocksNewAdmits() bool
+	ListLeases(ctx context.Context) ([]cluster.LeaseRecord, error)
+}
+
+const (
+	ControlStateActive   = "active"
+	ControlStatePaused   = "paused"
+	ControlStateDraining = "draining"
+)
 
 // NewManager creates a capacity manager from routing config.
 func NewManager(cfg *routing.Config, registries ...*slots.Registry) *Manager {
@@ -128,6 +156,24 @@ func NewManager(cfg *routing.Config, registries ...*slots.Registry) *Manager {
 	return mgr
 }
 
+func (m *Manager) SetDistributedLeases(leases *cluster.LeaseStore) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.leases = leases
+}
+
+func (m *Manager) SetNodeStateProvider(provider nodeStateProvider) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.node = provider
+}
+
 func newServiceState(svc routing.ServiceRoute) *serviceState {
 	if !svc.Enabled {
 		return nil
@@ -152,6 +198,7 @@ func newServiceState(svc routing.ServiceRoute) *serviceState {
 		maxConcurrent:     maxConcurrent,
 		requireRegistered: svc.Capacity.RequireRegistered,
 		allocator:         svc.Capacity.Allocator,
+		controlState:      ControlStateActive,
 		overflowPolicy:    svc.Capacity.OverflowPolicy,
 		transferTarget:    svc.Capacity.TransferTarget,
 		overflowService:   svc.Capacity.OverflowService,
@@ -223,7 +270,26 @@ func (m *Manager) AdmitRequest(req AdmitRequest) Decision {
 		return preview
 	}
 
-	slotIndex := m.findCandidateSlotLocked(state, req.CallerID, time.Now())
+	candidates := m.candidateSlotOrderLocked(state, req.CallerID, time.Now())
+	slotIndex := -1
+	for _, candidate := range candidates {
+		if candidate < 0 || candidate >= len(state.slots) {
+			continue
+		}
+		if m.leases != nil {
+			ok, err := m.leases.Acquire(context.Background(), state.name, state.slots[candidate].id, req.SessionID, m.currentNodeStateLocked(), time.Now())
+			if err != nil {
+				continue
+			}
+			if !ok {
+				continue
+			}
+			slotIndex = candidate
+			break
+		}
+		slotIndex = candidate
+		break
+	}
 	if slotIndex < 0 {
 		preview.Allowed = false
 		preview.Reason = "service capacity exceeded"
@@ -260,6 +326,9 @@ func (m *Manager) Release(sessionID string) {
 		if !exists {
 			continue
 		}
+		if m.leases != nil {
+			_, _ = m.leases.Release(context.Background(), state.name, state.slots[slotIndex].id, sessionID)
+		}
 		state.slots[slotIndex].sessionID = ""
 		state.slots[slotIndex].lastReleasedAt = time.Now()
 		delete(state.sessionSlot, sessionID)
@@ -277,15 +346,19 @@ func (m *Manager) Snapshots() []ServiceSnapshot {
 	now := time.Now()
 	for _, state := range m.services {
 		available, registered := m.availabilityLocked(state, now)
+		remoteLeases := m.distributedLeaseMapLocked(state.name)
 		snapshot := ServiceSnapshot{
 			ServiceName:       state.name,
 			Backend:           state.backend,
 			MaxConcurrent:     state.maxConcurrent,
-			ActiveCalls:       len(state.sessionSlot),
+			ActiveCalls:       len(state.sessionSlot) + m.remoteLeaseCountLocked(state.name),
 			AvailableSlots:    available,
 			RegisteredSlots:   registered,
 			RequireRegistered: state.requireRegistered,
 			Allocator:         state.allocator,
+			ControlState:      state.controlState,
+			ControlReason:     state.controlReason,
+			ControlUpdatedAt:  state.controlUpdatedAt,
 			OverflowPolicy:    state.overflowPolicy,
 			TransferTarget:    state.transferTarget,
 			OverflowService:   state.overflowService,
@@ -302,6 +375,16 @@ func (m *Manager) Snapshots() []ServiceSnapshot {
 				Backend:        slot.backend,
 				Extension:      slot.extension,
 				LastReleasedAt: slot.lastReleasedAt,
+			}
+			if lease, ok := remoteLeases[slot.id]; ok {
+				slotSnapshot.SessionID = lease.SessionID
+				slotSnapshot.InUse = true
+				slotSnapshot.OwnerNodeID = lease.OwnerNodeID
+				slotSnapshot.LocalOwner = lease.OwnerNodeID == "" || lease.OwnerNodeID == m.localNodeIDLocked()
+				slotSnapshot.LeaseRenewedAt = lease.RenewedAt
+				slotSnapshot.LeaseTTLMS = lease.TTLRemaining.Milliseconds()
+				slotSnapshot.Stale = lease.Stale
+				slotSnapshot.StaleReason = lease.StaleReason
 			}
 			if slot.extension != "" {
 				snapshot.ExtensionsInventory = append(snapshot.ExtensionsInventory, slot.extension)
@@ -342,7 +425,32 @@ func (m *Manager) previewLocked(serviceName string) Decision {
 		}
 	}
 
-	available, _ := m.availabilityLocked(state, time.Now())
+	switch state.controlState {
+	case ControlStatePaused:
+		decision := m.allowedDecision(state)
+		decision.Allowed = false
+		decision.Reason = "service paused"
+		return decision
+	case ControlStateDraining:
+		decision := m.allowedDecision(state)
+		decision.Allowed = false
+		decision.Reason = "service draining"
+		return decision
+	}
+	if m.node != nil && m.node.BlocksNewAdmits() {
+		decision := m.allowedDecision(state)
+		decision.Allowed = false
+		decision.Reason = "node draining"
+		return decision
+	}
+
+	available := 0
+	now := time.Now()
+	for idx := range state.slots {
+		if ok, _ := m.slotEligibleLocked(state, &state.slots[idx], now); ok {
+			available++
+		}
+	}
 	if available > 0 {
 		return m.allowedDecision(state)
 	}
@@ -368,8 +476,17 @@ func (m *Manager) allowedDecision(state *serviceState) Decision {
 }
 
 func (m *Manager) availabilityLocked(state *serviceState, now time.Time) (available int, registered int) {
+	remoteLeases := m.distributedLeaseMapLocked(state.name)
 	for idx := range state.slots {
 		slot := &state.slots[idx]
+		if _, ok := remoteLeases[slot.id]; ok && slot.sessionID == "" {
+			if slot.extension != "" {
+				if _, reg := m.registrationLocked(slot.extension, now); reg {
+					registered++
+				}
+			}
+			continue
+		}
 		eligible, reg := m.slotEligibleLocked(state, slot, now)
 		if reg {
 			registered++
@@ -403,56 +520,83 @@ func (m *Manager) registrationLocked(extension string, now time.Time) (slots.Reg
 }
 
 func (m *Manager) findCandidateSlotLocked(state *serviceState, callerID string, now time.Time) int {
-	if state == nil || len(state.slots) == 0 {
+	order := m.candidateSlotOrderLocked(state, callerID, now)
+	if len(order) == 0 {
 		return -1
+	}
+	return order[0]
+}
+
+func (m *Manager) candidateSlotOrderLocked(state *serviceState, callerID string, now time.Time) []int {
+	if state == nil || len(state.slots) == 0 {
+		return nil
 	}
 	switch state.allocator {
 	case routing.AllocatorPriority:
+		var order []int
 		for idx := range state.slots {
 			if ok, _ := m.slotEligibleLocked(state, &state.slots[idx], now); ok {
-				return idx
+				order = append(order, idx)
 			}
 		}
+		return order
 	case routing.AllocatorStickyCaller:
 		if callerID != "" {
+			var order []int
 			start := int(hashString(callerID) % uint32(len(state.slots)))
 			for offset := 0; offset < len(state.slots); offset++ {
 				idx := (start + offset) % len(state.slots)
 				if ok, _ := m.slotEligibleLocked(state, &state.slots[idx], now); ok {
-					return idx
+					order = append(order, idx)
 				}
 			}
-			return -1
+			return order
 		}
 		fallthrough
 	case routing.AllocatorRoundRobin:
+		var order []int
 		for offset := 0; offset < len(state.slots); offset++ {
 			idx := (state.nextIndex + offset) % len(state.slots)
 			if ok, _ := m.slotEligibleLocked(state, &state.slots[idx], now); ok {
-				return idx
+				order = append(order, idx)
 			}
 		}
+		return order
 	case routing.AllocatorLeastRecently:
-		bestIdx := -1
-		bestTime := time.Time{}
+		type candidate struct {
+			idx int
+			at  time.Time
+		}
+		candidates := make([]candidate, 0, len(state.slots))
 		for idx := range state.slots {
 			if ok, _ := m.slotEligibleLocked(state, &state.slots[idx], now); !ok {
 				continue
 			}
-			if bestIdx < 0 || earlierRelease(state.slots[idx].lastReleasedAt, bestTime) {
-				bestIdx = idx
-				bestTime = state.slots[idx].lastReleasedAt
-			}
+			candidates = append(candidates, candidate{idx: idx, at: state.slots[idx].lastReleasedAt})
 		}
-		return bestIdx
+		sort.Slice(candidates, func(i, j int) bool {
+			return earlierRelease(candidates[i].at, candidates[j].at)
+		})
+		order := make([]int, 0, len(candidates))
+		for _, candidate := range candidates {
+			order = append(order, candidate.idx)
+		}
+		return order
 	}
-	return -1
+	return nil
 }
 
 func (m *Manager) updateServiceMetricsLocked(state *serviceState) {
 	metrics.ServiceActiveCalls.WithLabelValues(state.name).Set(float64(len(state.sessionSlot)))
 	available, _ := m.availabilityLocked(state, time.Now())
 	metrics.SlotBackendAvailable.WithLabelValues(state.name, state.backend).Set(float64(available))
+	for _, candidate := range []string{ControlStateActive, ControlStatePaused, ControlStateDraining} {
+		value := 0.0
+		if state.controlState == candidate {
+			value = 1
+		}
+		metrics.ServiceControlState.WithLabelValues(state.name, candidate).Set(value)
+	}
 	for _, slot := range state.slots {
 		value := 0.0
 		if slot.sessionID != "" {
@@ -480,4 +624,209 @@ func earlierRelease(candidate, current time.Time) bool {
 		return true
 	}
 	return candidate.Before(current)
+}
+
+func (m *Manager) SetServiceControlState(serviceName, controlState, reason string) bool {
+	if m == nil || serviceName == "" {
+		return false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, ok := m.services[serviceName]
+	if !ok {
+		return false
+	}
+	if controlState == "" {
+		controlState = ControlStateActive
+	}
+	state.controlState = controlState
+	state.controlReason = reason
+	state.controlUpdatedAt = time.Now()
+	m.updateServiceMetricsLocked(state)
+	return true
+}
+
+func (m *Manager) PauseService(serviceName, reason string) bool {
+	return m.SetServiceControlState(serviceName, ControlStatePaused, reason)
+}
+
+func (m *Manager) ResumeService(serviceName string) bool {
+	return m.SetServiceControlState(serviceName, ControlStateActive, "")
+}
+
+func (m *Manager) DrainService(serviceName, reason string) bool {
+	return m.SetServiceControlState(serviceName, ControlStateDraining, reason)
+}
+
+func (m *Manager) ServiceSnapshot(serviceName string) (ServiceSnapshot, bool) {
+	if m == nil || serviceName == "" {
+		return ServiceSnapshot{}, false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, ok := m.services[serviceName]
+	if !ok {
+		return ServiceSnapshot{}, false
+	}
+	available, registered := m.availabilityLocked(state, time.Now())
+	remoteLeases := m.distributedLeaseMapLocked(state.name)
+	snapshot := ServiceSnapshot{
+		ServiceName:       state.name,
+		Backend:           state.backend,
+		MaxConcurrent:     state.maxConcurrent,
+		ActiveCalls:       len(state.sessionSlot) + m.remoteLeaseCountLocked(state.name),
+		AvailableSlots:    available,
+		RegisteredSlots:   registered,
+		RequireRegistered: state.requireRegistered,
+		Allocator:         state.allocator,
+		ControlState:      state.controlState,
+		ControlReason:     state.controlReason,
+		ControlUpdatedAt:  state.controlUpdatedAt,
+		OverflowPolicy:    state.overflowPolicy,
+		TransferTarget:    state.transferTarget,
+		OverflowService:   state.overflowService,
+		QueueMaxWaitSec:   state.queueMaxWaitSec,
+		QueueAnnouncement: state.queueAnnouncement,
+		QueueOnTimeout:    state.queueOnTimeout,
+		Slots:             make([]SlotSnapshot, 0, len(state.slots)),
+	}
+	for _, slot := range state.slots {
+		record := SlotSnapshot{
+			SlotID:         slot.id,
+			SessionID:      slot.sessionID,
+			InUse:          slot.sessionID != "",
+			Backend:        slot.backend,
+			Extension:      slot.extension,
+			LastReleasedAt: slot.lastReleasedAt,
+		}
+		if lease, ok := remoteLeases[slot.id]; ok {
+			record.SessionID = lease.SessionID
+			record.InUse = true
+			record.OwnerNodeID = lease.OwnerNodeID
+			record.LocalOwner = lease.OwnerNodeID == "" || lease.OwnerNodeID == m.localNodeIDLocked()
+			record.LeaseRenewedAt = lease.RenewedAt
+			record.LeaseTTLMS = lease.TTLRemaining.Milliseconds()
+			record.Stale = lease.Stale
+			record.StaleReason = lease.StaleReason
+		}
+		if slot.extension != "" {
+			snapshot.ExtensionsInventory = append(snapshot.ExtensionsInventory, slot.extension)
+			if reg, ok := m.registrationLocked(slot.extension, time.Now()); ok {
+				record.Registered = true
+				record.LastSeenAt = reg.LastSeenAt
+			}
+		}
+		snapshot.Slots = append(snapshot.Slots, record)
+	}
+	return snapshot, true
+}
+
+func (m *Manager) ForceReleaseSlot(slotID string) (serviceName, sessionID string, ok bool) {
+	if m == nil || slotID == "" {
+		return "", "", false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, state := range m.services {
+		for idx := range state.slots {
+			if state.slots[idx].id != slotID {
+				continue
+			}
+			sessionID = state.slots[idx].sessionID
+			serviceName = state.name
+			if m.leases != nil {
+				if sessionID == "" {
+					if lease, exists, err := m.leases.LookupSlot(context.Background(), state.name, slotID); err == nil && exists {
+						sessionID = lease.SessionID
+					}
+				}
+				_ = m.leases.ForceRelease(context.Background(), state.name, slotID, sessionID)
+			}
+			if sessionID != "" {
+				delete(state.sessionSlot, sessionID)
+			}
+			state.slots[idx].sessionID = ""
+			state.slots[idx].lastReleasedAt = time.Now()
+			m.updateServiceMetricsLocked(state)
+			return serviceName, sessionID, true
+		}
+	}
+	return "", "", false
+}
+
+func (m *Manager) RenewLeases() {
+	if m == nil || m.leases == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	for _, state := range m.services {
+		for _, slot := range state.slots {
+			if slot.sessionID == "" {
+				continue
+			}
+			_, _ = m.leases.Renew(context.Background(), state.name, slot.id, slot.sessionID, m.currentNodeStateLocked(), now)
+		}
+	}
+}
+
+func (m *Manager) distributedLeaseMapLocked(serviceName string) map[string]cluster.LeaseRecord {
+	if m.leases == nil {
+		return nil
+	}
+	var (
+		records []cluster.LeaseRecord
+		err     error
+	)
+	if m.node != nil {
+		records, err = m.node.ListLeases(context.Background())
+	} else {
+		records, err = m.leases.List(context.Background())
+	}
+	if err != nil || len(records) == 0 {
+		return nil
+	}
+	out := make(map[string]cluster.LeaseRecord)
+	for _, record := range records {
+		if record.ServiceName != serviceName {
+			continue
+		}
+		out[record.SlotID] = record
+	}
+	return out
+}
+
+func (m *Manager) remoteLeaseCountLocked(serviceName string) int {
+	leases := m.distributedLeaseMapLocked(serviceName)
+	if len(leases) == 0 {
+		return 0
+	}
+	count := 0
+	for _, record := range leases {
+		if record.OwnerNodeID != m.localNodeIDLocked() {
+			count++
+		}
+	}
+	return count
+}
+
+func (m *Manager) currentNodeStateLocked() string {
+	if m.node == nil {
+		return ControlStateActive
+	}
+	return m.node.CurrentState()
+}
+
+func (m *Manager) localNodeIDLocked() string {
+	if m.leases == nil {
+		return ""
+	}
+	return m.leases.NodeID()
 }

@@ -48,6 +48,24 @@ func AuthMiddleware(expectedKey string) func(http.Handler) http.Handler {
 	}
 }
 
+func SharedSecretMiddleware(expectedSecret string) func(http.Handler) http.Handler {
+	expected := []byte(expectedSecret)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if len(expected) == 0 {
+				http.Error(w, `{"error":"internal secret not configured"}`, http.StatusServiceUnavailable)
+				return
+			}
+			provided := []byte(r.Header.Get("X-Internal-Secret"))
+			if subtle.ConstantTimeCompare(expected, provided) != 1 {
+				http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // RateLimitMiddleware applies per-IP + global token bucket rate limiters.
 // T-26: Per-IP limiter prevents a single client from exhausting the global budget.
 func RateLimitMiddleware(rps float64, burst int) func(http.Handler) http.Handler {

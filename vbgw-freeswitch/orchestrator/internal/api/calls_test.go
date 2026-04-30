@@ -30,6 +30,7 @@ type mockESLCalls struct {
 	recordErr               error
 	breakErr                error
 	killErr                 error
+	killCalls               []string
 	connected               bool
 }
 
@@ -58,7 +59,10 @@ func (m *mockESLCalls) Unbridge(ctx context.Context, uuid string) error         
 func (m *mockESLCalls) RecordStart(ctx context.Context, uuid, path string) error { return m.recordErr }
 func (m *mockESLCalls) RecordStop(ctx context.Context, uuid string) error        { return m.recordErr }
 func (m *mockESLCalls) Break(ctx context.Context, uuid string) error             { return m.breakErr }
-func (m *mockESLCalls) Kill(ctx context.Context, uuid string) error              { return m.killErr }
+func (m *mockESLCalls) Kill(ctx context.Context, uuid string) error {
+	m.killCalls = append(m.killCalls, uuid)
+	return m.killErr
+}
 func (m *mockESLCalls) Dump(ctx context.Context, uuid string) (map[string]string, error) {
 	return m.dumpResp, m.dumpErr
 }

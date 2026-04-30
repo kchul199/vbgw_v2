@@ -21,12 +21,15 @@ func TestHandleClearBuffer_DrainsTTSChannel(t *testing.T) {
 	// Mock Orchestrator that accepts barge-in POST
 	var received atomic.Int32
 	mockOrch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Internal-Secret"); got != "secret-123" {
+			t.Fatalf("expected internal secret header, got %q", got)
+		}
 		received.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer mockOrch.Close()
 
-	ctrl := NewController(mockOrch.URL)
+	ctrl := NewController(mockOrch.URL, "secret-123")
 	ctx := context.Background()
 
 	ctrl.HandleClearBuffer(ctx, "test-uuid-123", ttsCh)
@@ -50,7 +53,7 @@ func TestHandleClearBuffer_EmptyTTSChannel(t *testing.T) {
 	}))
 	defer mockOrch.Close()
 
-	ctrl := NewController(mockOrch.URL)
+	ctrl := NewController(mockOrch.URL, "")
 	ctrl.HandleClearBuffer(context.Background(), "test-uuid", ttsCh)
 
 	// Should not panic with empty channel
@@ -61,7 +64,7 @@ func TestHandleClearBuffer_OrchestratorDown(t *testing.T) {
 	tts.Enqueue(ttsCh, []byte("frame"))
 
 	// Point to a non-existent server
-	ctrl := NewController("http://127.0.0.1:19999")
+	ctrl := NewController("http://127.0.0.1:19999", "")
 	ctx := context.Background()
 
 	// Should not panic, just log error
@@ -85,7 +88,7 @@ func TestHandleClearBuffer_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Already cancelled
 
-	ctrl := NewController(mockOrch.URL)
+	ctrl := NewController(mockOrch.URL, "")
 	ctrl.HandleClearBuffer(ctx, "test-uuid", ttsCh)
 
 	// Should drain TTS but HTTP request may fail (cancelled context)
@@ -106,7 +109,7 @@ func TestHandleClearBuffer_MeasuresLatency(t *testing.T) {
 	}))
 	defer mockOrch.Close()
 
-	ctrl := NewController(mockOrch.URL)
+	ctrl := NewController(mockOrch.URL, "")
 	start := time.Now()
 	ctrl.HandleClearBuffer(context.Background(), "test-uuid", ttsCh)
 	elapsed := time.Since(start)

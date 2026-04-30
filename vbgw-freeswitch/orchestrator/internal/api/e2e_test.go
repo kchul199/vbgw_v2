@@ -230,7 +230,7 @@ func buildTestRouter(cfg *config.Config, eslMock esl.Commander, store session.St
 		FailFastWhenStale: cfg.PBXFailFastOnStale,
 	})
 	handoffMgr := interconnect.NewHandoffManager()
-	router, err := NewRouter(cfg, nil, nil, nil, gatewayStore, gatewaySelector, handoffMgr, eslMock.(*mockESLE2E), store, "test-node-id")
+	router, err := NewRouter(cfg, nil, nil, nil, gatewayStore, gatewaySelector, handoffMgr, nil, eslMock.(*mockESLE2E), store, "test-node-id")
 	if err != nil {
 		panic(err)
 	}

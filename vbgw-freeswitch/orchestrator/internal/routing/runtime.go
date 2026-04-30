@@ -12,9 +12,11 @@ import (
 
 // Runtime holds the loaded routing document and its resolver.
 type Runtime struct {
-	Path     string
-	Config   *Config
-	Resolver *Resolver
+	Path           string
+	Config         *Config
+	Resolver       *Resolver
+	validateOpts   ValidateOptions
+	legacyAIRoutes []string
 }
 
 // LoadRuntime loads the routing config using the deployment defaults.
@@ -61,28 +63,52 @@ func LoadRuntime(cfg *appconfig.Config) (*Runtime, error) {
 
 	metrics.RoutingConfigLoaded.Set(1)
 	return &Runtime{
-		Path:     path,
-		Config:   routeCfg,
-		Resolver: NewResolver(routeCfg),
+		Path:           path,
+		Config:         routeCfg,
+		Resolver:       NewResolver(routeCfg),
+		validateOpts:   validateOpts,
+		legacyAIRoutes: append([]string(nil), cfg.AIRouteNumbers...),
 	}, nil
+}
+
+// PreviewReload validates the current routing file and returns the next config without applying it.
+func (rt *Runtime) PreviewReload() (*Config, error) {
+	if rt == nil || rt.Path == "" {
+		return nil, fmt.Errorf("routing runtime or path not initialized")
+	}
+
+	validateOpts := rt.validateOpts
+	if len(validateOpts.AllowedIngressStages) == 0 {
+		validateOpts.AllowedIngressStages = []string{"default-policy", "public-admission"}
+	}
+	routeCfg, err := LoadFromPath(rt.Path, validateOpts)
+	if err != nil {
+		return nil, fmt.Errorf("reload failed: %w", err)
+	}
+	if overlaps := overlapEntries(routeCfg, rt.legacyAIRoutes); len(overlaps) > 0 {
+		metrics.RoutingConfigLoaded.Set(0)
+		return nil, fmt.Errorf("%w: legacy AI_ROUTE_NUMBERS overlaps policy-owned entries %v", ErrInvalidConfig, overlaps)
+	}
+	return routeCfg, nil
+}
+
+// Apply atomically installs a validated routing document.
+func (rt *Runtime) Apply(routeCfg *Config) {
+	if rt == nil || routeCfg == nil {
+		return
+	}
+	rt.Config = routeCfg
+	rt.Resolver = NewResolver(routeCfg)
+	metrics.RoutingConfigLoaded.Set(1)
 }
 
 // Reload re-reads routing.yaml from disk and updates Config + Resolver in-place.
 func (rt *Runtime) Reload() error {
-	if rt == nil || rt.Path == "" {
-		return fmt.Errorf("routing runtime or path not initialized")
-	}
-
-	routeCfg, err := LoadFromPath(rt.Path, ValidateOptions{
-		AllowedIngressStages: []string{"default-policy", "public-admission"},
-	})
+	routeCfg, err := rt.PreviewReload()
 	if err != nil {
-		return fmt.Errorf("reload failed: %w", err)
+		return err
 	}
-
-	rt.Config = routeCfg
-	rt.Resolver = NewResolver(routeCfg)
-	metrics.RoutingConfigLoaded.Set(1)
+	rt.Apply(routeCfg)
 	return nil
 }
 
