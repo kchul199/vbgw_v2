@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -45,8 +46,20 @@ type Session struct {
 
 	aiPaused atomic.Bool
 
+	startedAt time.Time
+	rxFrames  atomic.Uint64
+	rxBytes   atomic.Uint64
+	txFrames  atomic.Uint64
+	txBytes   atomic.Uint64
+	grpcSends atomic.Uint64
+	grpcRecvs atomic.Uint64
+
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	closeMetaMu sync.Mutex
+	closeReason string
+	closeErr    string
 }
 
 // NewSession creates a new per-session pipeline.
@@ -70,6 +83,7 @@ func NewSession(
 		bufferPool:      pool,
 		pcmCh:           make(chan []byte, pcmChCap),
 		ttsCh:           make(chan []byte, ttsChCap),
+		startedAt:       time.Now(),
 		ctx:             ctx,
 		cancel:          cancel,
 	}
@@ -82,6 +96,7 @@ func (s *Session) Run() {
 	defer s.vadInstance.Close() // Cleanup VAD instance tensors
 	defer close(s.pcmCh)
 	defer close(s.ttsCh)
+	defer s.logSummary()
 
 	var wg sync.WaitGroup
 	wg.Add(4)
@@ -111,6 +126,42 @@ func (s *Session) Run() {
 	}()
 
 	wg.Wait()
+}
+
+func (s *Session) markClose(reason string, err error) {
+	s.closeMetaMu.Lock()
+	defer s.closeMetaMu.Unlock()
+	if s.closeReason != "" {
+		return
+	}
+	s.closeReason = reason
+	if err != nil {
+		s.closeErr = err.Error()
+	}
+}
+
+func (s *Session) logSummary() {
+	s.closeMetaMu.Lock()
+	reason := s.closeReason
+	errText := s.closeErr
+	s.closeMetaMu.Unlock()
+	if reason == "" {
+		reason = "session_completed"
+	}
+
+	slog.Info(
+		"WS session summary",
+		"uuid", s.uuid,
+		"duration_ms", time.Since(s.startedAt).Milliseconds(),
+		"rx_frames", s.rxFrames.Load(),
+		"rx_bytes", s.rxBytes.Load(),
+		"tx_frames", s.txFrames.Load(),
+		"tx_bytes", s.txBytes.Load(),
+		"grpc_sends", s.grpcSends.Load(),
+		"grpc_recvs", s.grpcRecvs.Load(),
+		"close_reason", reason,
+		"close_err", errText,
+	)
 }
 
 // SetAIPaused controls whether gRPC send is active.
@@ -150,8 +201,10 @@ func (s *Session) rxLoop() {
 		if err != nil {
 			s.bufferPool.Put(buf) // Return on error
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				s.markClose("ws_closed_normally", err)
 				slog.Info("WS closed normally", "uuid", s.uuid)
 			} else {
+				s.markClose("ws_read_error", err)
 				slog.Error("WS read error", "uuid", s.uuid, "err", err)
 			}
 			s.cancel()
@@ -161,6 +214,8 @@ func (s *Session) rxLoop() {
 		// Copy data to pooled buffer (gorilla/websocket reuse buffers internally, so we MUST copy)
 		n := copy(buf, data)
 		pooledData := buf[:n]
+		s.rxFrames.Add(1)
+		s.rxBytes.Add(uint64(n))
 
 		// T-08: Non-blocking enqueue — drop new frame if full (atomic, no race)
 		select {
@@ -176,6 +231,7 @@ func (s *Session) rxLoop() {
 func (s *Session) vadGrpcLoop() {
 	stream, err := s.grpcPool.GetStream(s.ctx, s.uuid)
 	if err != nil {
+		s.markClose("grpc_stream_create_failed", err)
 		slog.Error("gRPC stream creation failed", "uuid", s.uuid, "err", err)
 		s.cancel()
 		return
@@ -183,8 +239,10 @@ func (s *Session) vadGrpcLoop() {
 
 	// T-20: Send an initial metadata-only chunk to trigger AI greeting
 	if err := stream.Send(s.uuid, nil, false); err != nil {
+		s.markClose("grpc_initial_metadata_failed", err)
 		slog.Error("Failed to send initial metadata chunk", "uuid", s.uuid, "err", err)
 	} else {
+		s.grpcSends.Add(1)
 		slog.Info("Sent initial metadata chunk to trigger greeting", "uuid", s.uuid)
 	}
 
@@ -206,11 +264,13 @@ func (s *Session) vadGrpcLoop() {
 
 			// Send to AI via gRPC (always include session ID for reliability)
 			err := stream.Send(s.uuid, pcm, isSpeaking)
+			s.grpcSends.Add(1)
 
 			// ALWAYS return buffer to pool after processing/sending
 			s.bufferPool.Put(pcm)
 
 			if err != nil {
+				s.markClose("grpc_send_failed", err)
 				slog.Error("gRPC send failed", "uuid", s.uuid, "err", err)
 				s.cancel()
 				return
@@ -223,6 +283,7 @@ func (s *Session) vadGrpcLoop() {
 func (s *Session) aiResponseLoop() {
 	stream, err := s.grpcPool.GetStream(s.ctx, s.uuid)
 	if err != nil {
+		s.markClose("grpc_stream_recv_unavailable", err)
 		slog.Error("gRPC stream not available for recv", "uuid", s.uuid, "err", err)
 		return
 	}
@@ -236,10 +297,12 @@ func (s *Session) aiResponseLoop() {
 
 		resp, err := stream.Recv()
 		if err != nil {
+			s.markClose("grpc_recv_failed", err)
 			slog.Error("gRPC recv error", "uuid", s.uuid, "err", err)
 			s.cancel()
 			return
 		}
+		s.grpcRecvs.Add(1)
 
 		// Handle clear_buffer (barge-in)
 		if resp.ClearBuffer {
@@ -276,10 +339,13 @@ func (s *Session) txLoop() {
 
 			// T-21: mod_audio_fork expects raw binary frames for playout injection.
 			if err := s.conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+				s.markClose("ws_write_error", err)
 				slog.Error("WS write error (binary)", "uuid", s.uuid, "err", err)
 				s.cancel()
 				return
 			}
+			s.txFrames.Add(1)
+			s.txBytes.Add(uint64(len(frame)))
 			slog.Debug("Sent binary audio frame to FreeSWITCH", "uuid", s.uuid, "size", len(frame))
 		}
 	}

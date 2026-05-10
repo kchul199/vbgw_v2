@@ -3,6 +3,8 @@ package ai
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
+	"time"
 )
 
 // AddWAVHeader는 Raw PCM 16kHz 16bit Mono 데이터를 Whisper가 인식 가능한 WAV 포맷으로 변환합니다.
@@ -17,13 +19,13 @@ func AddWAVHeader(pcmData []byte) []byte {
 
 	// fmt 청크
 	buf.Write([]byte("fmt "))
-	binary.Write(buf, binary.LittleEndian, uint32(16))          // Subchunk1Size
-	binary.Write(buf, binary.LittleEndian, uint16(1))           // AudioFormat (1 = PCM)
-	binary.Write(buf, binary.LittleEndian, uint16(1))           // NumChannels (1 = Mono)
-	binary.Write(buf, binary.LittleEndian, uint32(16000))       // SampleRate (16kHz)
-	binary.Write(buf, binary.LittleEndian, uint32(16000*2))     // ByteRate (SampleRate * NumChannels * BitsPerSample/8)
-	binary.Write(buf, binary.LittleEndian, uint16(2))           // BlockAlign (NumChannels * BitsPerSample/8)
-	binary.Write(buf, binary.LittleEndian, uint16(16))          // BitsPerSample
+	binary.Write(buf, binary.LittleEndian, uint32(16))      // Subchunk1Size
+	binary.Write(buf, binary.LittleEndian, uint16(1))       // AudioFormat (1 = PCM)
+	binary.Write(buf, binary.LittleEndian, uint16(1))       // NumChannels (1 = Mono)
+	binary.Write(buf, binary.LittleEndian, uint32(16000))   // SampleRate (16kHz)
+	binary.Write(buf, binary.LittleEndian, uint32(16000*2)) // ByteRate (SampleRate * NumChannels * BitsPerSample/8)
+	binary.Write(buf, binary.LittleEndian, uint16(2))       // BlockAlign (NumChannels * BitsPerSample/8)
+	binary.Write(buf, binary.LittleEndian, uint16(16))      // BitsPerSample
 
 	// data 청크
 	buf.Write([]byte("data"))
@@ -69,3 +71,21 @@ func Resample24To16(input []byte) []byte {
 	return output
 }
 
+// GenerateTonePCM16 creates mono 16kHz 16-bit PCM for lightweight load-test playout.
+func GenerateTonePCM16(duration time.Duration, freqHz float64, amplitude int16) []byte {
+	if duration <= 0 {
+		return nil
+	}
+	const sampleRate = 16000
+	samples := int(float64(sampleRate) * duration.Seconds())
+	if samples <= 0 {
+		return nil
+	}
+	out := make([]byte, samples*2)
+	for i := 0; i < samples; i++ {
+		phase := 2.0 * math.Pi * freqHz * float64(i) / sampleRate
+		value := int16(math.Sin(phase) * float64(amplitude))
+		binary.LittleEndian.PutUint16(out[i*2:i*2+2], uint16(value))
+	}
+	return out
+}

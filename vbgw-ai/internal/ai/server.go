@@ -91,8 +91,8 @@ func (s *sessionStore) removeSession(sessionID string) {
 
 type Server struct {
 	pb.UnimplementedVoicebotAiServiceServer
-	engine  SpeechEngine
-	store   *sessionStore
+	engine SpeechEngine
+	store  *sessionStore
 }
 
 func NewServer(engine SpeechEngine) *Server {
@@ -174,6 +174,20 @@ func (s *Server) StreamSession(stream pb.VoicebotAiService_StreamSessionServer) 
 
 // sendInitialGreeting: 세션 시작 시 최초 인사말 송출
 func (s *Server) sendInitialGreeting(ss *safeStream, sessionID string) {
+	if cfg := config.AppConfig; cfg != nil && cfg.LoadTest.GreetingBypass {
+		duration := time.Duration(cfg.LoadTest.GreetingToneMs) * time.Millisecond
+		audio := GenerateTonePCM16(duration, float64(cfg.LoadTest.GreetingToneHz), int16(cfg.LoadTest.GreetingAmpInt16))
+		sendPCMChunks(ss, audio)
+		slog.Info(
+			"Initial greeting bypass sent",
+			"session_id", sessionID,
+			"duration_ms", cfg.LoadTest.GreetingToneMs,
+			"tone_hz", cfg.LoadTest.GreetingToneHz,
+			"sample_bytes", len(audio),
+		)
+		return
+	}
+
 	ctx := context.Background()
 	greetingText := config.AppConfig.OpenAI.GreetingMsg
 	if greetingText == "" {

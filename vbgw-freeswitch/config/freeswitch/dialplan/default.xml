@@ -745,10 +745,17 @@
 
     <extension name="vbgw_ai">
       <condition field="destination_number" expression="^9196$">
+        <!-- SIPp load tests may not send sustained RTP; relax media timeout so the server
+             does not terminate otherwise healthy control-path calls before the caller BYE. -->
+        <action application="set" data="rtp_timeout_sec=60"/>
+        <action application="set" data="rtp_hold_timeout_sec=1800"/>
         <action application="answer"/>
+        <action application="set" data="session_in_hangup_hook=true"/>
+        <action application="set" data="execute_on_hangup=log NOTICE VBGW_9196_HANGUP uuid=${uuid} cause=${hangup_cause} sip_term_status=${sip_term_status} billsec=${billsec} answersec=${answersec} bridge_hangup_cause=${bridge_hangup_cause} endpoint_disposition=${endpoint_disposition} last_bridge_hangup_cause=${last_bridge_hangup_cause}"/>
         <!-- Explicitly enable bidirectional playout so AI audio is injected back into the call. -->
         <action application="set" data="res=${uuid_audio_fork(${uuid} start ws://vbgw-bridge:8090/audio/${uuid} mono 16000 audio_fork {} true true 16000)}"/>
-        <action application="playback" data="silence_stream://-1"/>
+        <action application="log" data="NOTICE VBGW_9196_AUDIO_FORK uuid=${uuid} res=${res} remote_media_ip=${remote_media_ip} remote_media_port=${remote_media_port} read_codec=${read_codec} write_codec=${write_codec}"/>
+        <action application="endless_playback" data="silence_stream://-1"/>
       </condition>
     </extension>
 

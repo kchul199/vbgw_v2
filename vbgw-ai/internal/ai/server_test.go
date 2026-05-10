@@ -10,15 +10,17 @@ import (
 
 	"github.com/sashabaranov/go-openai"
 	pb "vbgw-ai/proto/voicebot"
+
+	"vbgw-ai/internal/config"
 )
 
 // ── Mock SpeechEngine ──
 
 type mockEngine struct {
-	transcribeFunc func(ctx context.Context, data []byte) (string, error)
-	generateFunc   func(ctx context.Context, prompt string) (string, error)
+	transcribeFunc   func(ctx context.Context, data []byte) (string, error)
+	generateFunc     func(ctx context.Context, prompt string) (string, error)
 	generateHistFunc func(ctx context.Context, history []openai.ChatCompletionMessage) (string, error)
-	synthesizeFunc func(ctx context.Context, text string) ([]byte, error)
+	synthesizeFunc   func(ctx context.Context, text string) ([]byte, error)
 }
 
 func (m *mockEngine) Transcribe(ctx context.Context, data []byte) (string, error) {
@@ -84,11 +86,11 @@ func (m *mockStream) Recv() (*pb.AudioChunk, error) {
 }
 
 func (m *mockStream) SetHeader(_ interface{}) error  { return nil }
-func (m *mockStream) SendHeader(_ interface{}) error  { return nil }
-func (m *mockStream) SetTrailer(_ interface{})         {}
-func (m *mockStream) Context() context.Context         { return context.Background() }
-func (m *mockStream) SendMsg(_ interface{}) error      { return nil }
-func (m *mockStream) RecvMsg(_ interface{}) error      { return nil }
+func (m *mockStream) SendHeader(_ interface{}) error { return nil }
+func (m *mockStream) SetTrailer(_ interface{})       {}
+func (m *mockStream) Context() context.Context       { return context.Background() }
+func (m *mockStream) SendMsg(_ interface{}) error    { return nil }
+func (m *mockStream) RecvMsg(_ interface{}) error    { return nil }
 
 // ── Tests ──
 
@@ -178,8 +180,8 @@ func TestSafeStreamConcurrency(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			_ = ss.Send(&pb.AiResponse{
-				Type:        pb.AiResponse_TTS_AUDIO,
-				AudioData:   []byte{byte(n)},
+				Type:      pb.AiResponse_TTS_AUDIO,
+				AudioData: []byte{byte(n)},
 			})
 		}(i)
 	}
@@ -227,6 +229,55 @@ func TestSendPCMChunksPartial(t *testing.T) {
 		case <-timeout:
 			if count != 2 {
 				t.Fatalf("Expected 2 chunks, got %d", count)
+			}
+			return
+		}
+	}
+}
+
+func TestSendInitialGreeting_BypassMode(t *testing.T) {
+	originalCfg := config.AppConfig
+	t.Cleanup(func() {
+		config.AppConfig = originalCfg
+	})
+
+	config.AppConfig = &config.Config{}
+	config.AppConfig.LoadTest.GreetingBypass = true
+	config.AppConfig.LoadTest.GreetingToneMs = 120
+	config.AppConfig.LoadTest.GreetingToneHz = 550
+	config.AppConfig.LoadTest.GreetingAmpInt16 = 2000
+
+	engineCalled := false
+	engine := &mockEngine{
+		synthesizeFunc: func(ctx context.Context, text string) ([]byte, error) {
+			engineCalled = true
+			return nil, fmt.Errorf("should not call synthesize in bypass mode")
+		},
+	}
+	server := NewServer(engine)
+	ms := newMockStream()
+	ss := &safeStream{stream: &mockPBStream{ms: ms}}
+
+	server.sendInitialGreeting(ss, "bypass-session")
+
+	timeout := time.After(100 * time.Millisecond)
+	frameCount := 0
+	for {
+		select {
+		case resp := <-ms.sendCh:
+			if resp == nil {
+				t.Fatal("expected greeting frame")
+			}
+			if len(resp.AudioData) == 0 {
+				t.Fatal("expected greeting audio data")
+			}
+			frameCount++
+		case <-timeout:
+			if frameCount == 0 {
+				t.Fatal("expected at least one bypass greeting frame")
+			}
+			if engineCalled {
+				t.Fatal("expected synthesize to be bypassed")
 			}
 			return
 		}

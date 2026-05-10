@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="UTF-8" ?>
 <!--
   load_test_uac.xml — SIPp UAC 부하 테스트 시나리오
   변경이력: v1.0.0 | 2026-04-07 | [Implementer] | Phase 3 | 100 동시콜 30분 부하
@@ -5,7 +6,6 @@
   Usage:
     sipp -sf load_test_uac.xml -d 300000 -l 100 -m 600 -r 2 -rp 1000 TARGET_IP:5060
 -->
-<?xml version="1.0" encoding="UTF-8" ?>
 <scenario name="VoiceBot Load Test UAC">
 
   <!-- INVITE -->
@@ -41,11 +41,7 @@
   <recv response="180" optional="true" />
 
   <!-- 200 OK -->
-  <recv response="200" rtd="true">
-    <action>
-      <ereg regexp="Contact:.*<sip:(.*)>" search_in="msg" check_it="true" assign_to="1,remote_contact" />
-    </action>
-  </recv>
+  <recv response="200" rtd="true" />
 
   <!-- ACK -->
   <send>
@@ -61,13 +57,6 @@
       Content-Length: 0
     ]]>
   </send>
-
-  <!-- RTP echo (send silence) for call duration -->
-  <nop>
-    <action>
-      <exec play_pcap_audio="/dev/null"/>
-    </action>
-  </nop>
 
   <!-- Hold call for configured duration (-d flag) -->
   <pause />

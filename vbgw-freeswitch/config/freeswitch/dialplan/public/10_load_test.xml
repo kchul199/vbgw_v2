@@ -1,0 +1,8 @@
+<include>
+  <extension name="public_vbgw_load_test">
+    <condition field="destination_number" expression="^(9196|9296)$">
+      <action application="set" data="domain_name=$${domain}"/>
+      <action application="transfer" data="$1 XML default"/>
+    </condition>
+  </extension>
+</include>

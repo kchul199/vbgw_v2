@@ -3,6 +3,7 @@ package config
 import (
 	"log"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -21,6 +22,13 @@ type Config struct {
 		CushionMsg   string
 		GreetingMsg  string
 		SystemPrompt string
+	}
+
+	LoadTest struct {
+		GreetingBypass   bool
+		GreetingToneMs   int
+		GreetingToneHz   int
+		GreetingAmpInt16 int
 	}
 }
 
@@ -47,6 +55,11 @@ func LoadConfig() {
 	AppConfig.OpenAI.GreetingMsg = getEnv("AI_GREETING_MSG", "안녕하세요, 보이스봇입니다. 무엇을 도와드릴까요?")
 	AppConfig.OpenAI.SystemPrompt = getEnv("AI_SYSTEM_PROMPT", "당신은 지능형 음성봇 고객 응대 상담원입니다. 친절하고 간결하게 응답하세요.")
 
+	AppConfig.LoadTest.GreetingBypass = getEnvBool("AI_LOAD_TEST_GREETING_BYPASS", false)
+	AppConfig.LoadTest.GreetingToneMs = getEnvInt("AI_LOAD_TEST_GREETING_TONE_MS", 250)
+	AppConfig.LoadTest.GreetingToneHz = getEnvInt("AI_LOAD_TEST_GREETING_TONE_HZ", 440)
+	AppConfig.LoadTest.GreetingAmpInt16 = getEnvInt("AI_LOAD_TEST_GREETING_TONE_AMP", 2800)
+
 	if AppConfig.OpenAI.APIKey == "" {
 		log.Println("WARNING: OPENAI_API_KEY is not set. Real AI features will fail.")
 	}
@@ -57,4 +70,28 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func getEnvInt(key string, fallback int) int {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

@@ -39,7 +39,7 @@
     <condition field="destination_number" expression="^vbgw-ai-start$">
       <action application="set" data="audio_fork_url=$${audio_fork_scheme}://$${bridge_host}:$${bridge_ws_port}/audio/${uuid}"/>
       <action application="set" data="res=${uuid_audio_fork(${uuid} start ${audio_fork_url} mono 16000 audio_fork {} true true 16000)}"/>
-      <action application="playback" data="silence_stream://-1"/>
+      <action application="endless_playback" data="silence_stream://-1"/>
     </condition>
   </extension>
 

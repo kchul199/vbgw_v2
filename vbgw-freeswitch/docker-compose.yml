@@ -17,7 +17,7 @@ services:
       - "5060:5060/tcp"
       - "5061:5061/tcp"
       - "8021:8021/tcp"
-      - "16384-16484:16384-16484/udp"
+      - "16384-18384:16384-18384/udp"
     networks:
       vbgw-net:
         aliases:
@@ -212,6 +212,10 @@ services:
     environment:
       - PORT=8091
       - LOG_LEVEL=debug
+      - AI_LOAD_TEST_GREETING_BYPASS=${AI_LOAD_TEST_GREETING_BYPASS:-false}
+      - AI_LOAD_TEST_GREETING_TONE_MS=${AI_LOAD_TEST_GREETING_TONE_MS:-250}
+      - AI_LOAD_TEST_GREETING_TONE_HZ=${AI_LOAD_TEST_GREETING_TONE_HZ:-440}
+      - AI_LOAD_TEST_GREETING_TONE_AMP=${AI_LOAD_TEST_GREETING_TONE_AMP:-2800}
     restart: always
 
 networks:
