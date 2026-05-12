@@ -1,12 +1,13 @@
 /**
  * @file server.go
- * @description HTTP API 서버 — chi 라우터, 12 엔드포인트 등록
+ * @description HTTP API 서버 — chi 라우터, 12+ 엔드포인트 등록
  *
  * 변경 이력
  * ─────────────────────────────────────────
  * v1.0.0 | 2026-04-07 | [Implementer] | 최초 생성 | 12 엔드포인트 + Prometheus
  * v1.1.0 | 2026-04-07 | [Implementer] | Phase 3 | pprof 엔드포인트 추가
  * v1.2.0 | 2026-04-09 | [Implementer] | T-27 | /health를 auth 그룹으로 이동
+ * v1.3.0 | 2026-05-11 | [Implementer] | Portal | CORS + CDR + Metrics Summary
  * ─────────────────────────────────────────
  */
 
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"vbgw-orchestrator/internal/capacity"
+	"vbgw-orchestrator/internal/cdr"
 	"vbgw-orchestrator/internal/cluster"
 	"vbgw-orchestrator/internal/config"
 	"vbgw-orchestrator/internal/esl"
@@ -32,8 +34,11 @@ import (
 )
 
 // NewRouter creates the HTTP router with all endpoints registered.
-func NewRouter(cfg *config.Config, runtime *routing.Runtime, capacityMgr *capacity.Manager, overflowMgr *overflow.Manager, gatewayStore *interconnect.Store, gatewaySelector *interconnect.Selector, handoffMgr *interconnect.HandoffManager, clusterMgr *cluster.Manager, eslClient esl.Commander, sessions session.Store, nodeID string) (http.Handler, error) {
+func NewRouter(cfg *config.Config, runtime *routing.Runtime, capacityMgr *capacity.Manager, overflowMgr *overflow.Manager, gatewayStore *interconnect.Store, gatewaySelector *interconnect.Selector, handoffMgr *interconnect.HandoffManager, clusterMgr *cluster.Manager, eslClient esl.Commander, sessions session.Store, nodeID string, cdrStore ...*cdr.CDRStore) (http.Handler, error) {
 	r := chi.NewRouter()
+
+	// Portal CORS — must be outermost middleware for OPTIONS preflight
+	r.Use(CORSMiddleware(cfg.CORSAllowedOrigins))
 
 	bridgeURL := "http://" + cfg.BridgeHost + ":" + itoa(cfg.BridgeInternalPort)
 	httpClient := &http.Client{Timeout: 5 * time.Second}
@@ -63,6 +68,14 @@ func NewRouter(cfg *config.Config, runtime *routing.Runtime, capacityMgr *capaci
 	dialplanHandler := NewDialplanHandler(cfg.AIRouteNumbers, runtime, capacityMgr)
 	adminHandler := NewAdminHandler(sessions, capacityMgr, overflowMgr, gatewayStore, gatewaySelector, eslClient, operations, runtime)
 	adminHandler.SetClusterManager(clusterMgr)
+
+	// Portal: CDR + Metrics handlers
+	var cdrHandler *CDRHandler
+	if len(cdrStore) > 0 && cdrStore[0] != nil {
+		cdrHandler = &CDRHandler{Store: cdrStore[0]}
+	}
+	metricsSummaryHandler := &MetricsSummaryHandler{}
+
 	baseMetricsHandler := promhttp.Handler()
 	metricsHandler := baseMetricsHandler
 	if gatewayStore != nil || capacityMgr != nil || overflowMgr != nil {
@@ -109,6 +122,12 @@ func NewRouter(cfg *config.Config, runtime *routing.Runtime, capacityMgr *capaci
 		r.Get("/api/v1/admin/routing/config", adminHandler.GetRoutingConfig)
 		r.Get("/api/v1/admin/operations", adminHandler.GetOperations)
 		r.Get("/api/v1/admin/operations/{id}", adminHandler.GetOperation)
+
+		// Portal: CDR query + Metrics summary
+		if cdrHandler != nil {
+			r.Get("/api/v1/admin/cdr", cdrHandler.GetCDRRecords)
+		}
+		r.Get("/api/v1/admin/metrics/summary", metricsSummaryHandler.GetSummary)
 
 		// Prometheus metrics (behind auth to prevent info leak)
 		r.Handle("/metrics", metricsHandler)

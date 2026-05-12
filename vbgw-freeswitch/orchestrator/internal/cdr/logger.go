@@ -29,10 +29,19 @@ type Record struct {
 	BridgedWith    string  `json:"bridged_with,omitempty"`
 }
 
-var webhookURL string
+var (
+	webhookURL     string
+	globalCDRStore *CDRStore
+)
 
 func init() {
 	webhookURL = os.Getenv("CDR_WEBHOOK_URL")
+}
+
+// SetCDRStore registers the Redis CDR store for persistent CDR storage.
+// Must be called during application startup before any calls are processed.
+func SetCDRStore(store *CDRStore) {
+	globalCDRStore = store
 }
 
 // LogHangup writes a CDR entry for a completed call.
@@ -80,6 +89,11 @@ func LogHangup(s *session.SessionState, hangupCode string) {
 	// O3: CDR Webhook — fire-and-forget POST to external system
 	if webhookURL != "" {
 		go dispatchWebhook(cdr)
+	}
+
+	// Portal: persist to Redis CDR store for history queries
+	if globalCDRStore != nil {
+		globalCDRStore.Push(cdr)
 	}
 }
 

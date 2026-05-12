@@ -1,11 +1,12 @@
 /**
  * @file middleware.go
- * @description HTTP 미들웨어 — ConstantTimeCompare 인증 + Token Bucket 속도 제한
+ * @description HTTP 미들웨어 — CORS + ConstantTimeCompare 인증 + Token Bucket 속도 제한
  *
  * 변경 이력
  * ─────────────────────────────────────────
  * v1.0.0 | 2026-04-07 | [Implementer] | 최초 생성 | OWASP 준수 인증 + rate limit
  * v1.1.0 | 2026-04-09 | [Implementer] | T-26 | IP별 rate limiter + 전역 limiter 병행
+ * v1.2.0 | 2026-05-11 | [Implementer] | Portal | CORS 미들웨어 추가
  * ─────────────────────────────────────────
  */
 
@@ -199,3 +200,52 @@ func TracingMiddleware(next http.Handler) http.Handler {
 		}
 	})
 }
+
+// CORSMiddleware handles Cross-Origin Resource Sharing for the operations portal.
+// Processes OPTIONS preflight requests and sets appropriate CORS headers.
+func CORSMiddleware(allowedOrigins string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			allowed := false
+			if allowedOrigins == "*" {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				allowed = true
+			} else {
+				for _, ao := range strings.Split(allowedOrigins, ",") {
+					ao = strings.TrimSpace(ao)
+					if ao != "" && ao == origin {
+						w.Header().Set("Access-Control-Allow-Origin", origin)
+						allowed = true
+						break
+					}
+				}
+			}
+
+			if !allowed {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Admin-Key, X-Internal-Secret")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Max-Age", "3600")
+			w.Header().Set("Vary", "Origin")
+
+			// Handle preflight
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+

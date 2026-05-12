@@ -82,6 +82,9 @@ type Config struct {
 	// Phase 0 Routing
 	RoutingConfigPath string
 
+	// Portal CORS
+	CORSAllowedOrigins string
+
 	// Dynamic AI dialplan
 	AIRouteNumbers []string
 
@@ -149,6 +152,7 @@ func Load() *Config {
 		NodeID:                     envStr("NODE_ID", defaultNodeID()),
 		OrchestratorVersion:        envStr("ORCHESTRATOR_VERSION", "phase7-dev"),
 		RoutingConfigPath:          envStr("ROUTING_CONFIG_PATH", "/app/config/routing.yaml"),
+		CORSAllowedOrigins:         envStr("CORS_ALLOWED_ORIGINS", "*"),
 		AIRouteNumbers:             envCSV("AI_ROUTE_NUMBERS", []string{"9196"}),
 		OverflowQueueTickMS:        envInt("OVERFLOW_QUEUE_TICK_MS", 1000),
 		HumanFallbackEnabled:       envBool("HUMAN_FALLBACK_ENABLED", true),
