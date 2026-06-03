@@ -1,0 +1,40 @@
+services:
+  stage4-kamailio:
+    build:
+      context: ./tests/kamailio-stage4
+      dockerfile: Dockerfile
+    image: vbgw-stage4-kamailio:latest
+    container_name: vbgw-stage4-kamailio
+    restart: unless-stopped
+    expose:
+      - "5060/udp"
+    networks:
+      vbgw-net:
+        aliases:
+          - stage4-kamailio
+
+  freeswitch:
+    environment:
+      - PBX_INTERCONNECT_ENABLED=true
+      - PBX_MAIN_REGISTER=${STAGE4_PBX_MAIN_REGISTER:-false}
+      - PBX_MAIN_PROXY=stage4-kamailio:5060
+      - PBX_MAIN_REALM=stage4-kamailio
+      - PBX_MAIN_USERNAME=pbx-main
+      - PBX_MAIN_PASSWORD=stage4-secret
+      - PBX_MAIN_EXTENSION=pbx-main
+      - PBX_MAIN_FROM_USER=pbx-main
+      - PBX_MAIN_FROM_DOMAIN=stage4-kamailio
+      - PBX_MAIN_REGISTER_PROXY=stage4-kamailio:5060
+      - PBX_MAIN_REGISTER_TRANSPORT=udp
+      - PBX_MAIN_PING_SECONDS=15
+      - PBX_MAIN_RETRY_SECONDS=5
+      - PBX_STANDBY_ENABLED=false
+
+  orchestrator:
+    environment:
+      - PBX_INTERCONNECT_ENABLED=true
+      - PBX_MAIN_REGISTER=${STAGE4_PBX_MAIN_REGISTER:-false}
+      - PBX_MAIN_GATEWAY=pbx-main
+      - PBX_STANDBY_ENABLED=false
+      - PBX_PROBE_INTERVAL_SECONDS=5
+      - PBX_HEALTH_TTL_SECONDS=20

@@ -95,6 +95,22 @@ func (m *MemoryStore) Count(ctx context.Context) int64 {
 	return atomic.LoadInt64(&m.activeCount)
 }
 
+func (m *MemoryStore) HealthCheck(ctx context.Context) error {
+	return nil
+}
+
+func (m *MemoryStore) ReconcileActiveCalls(ctx context.Context, actual int64) (ReconcileResult, error) {
+	previous := atomic.LoadInt64(&m.activeCount)
+	if previous != actual {
+		atomic.StoreInt64(&m.activeCount, actual)
+	}
+	return ReconcileResult{
+		Previous:  previous,
+		Actual:    actual,
+		Corrected: previous != actual,
+	}, nil
+}
+
 func (m *MemoryStore) WaitAllDrained(ctx context.Context, killFn func(fsUUID string)) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -122,6 +138,11 @@ func (m *MemoryStore) ForEachLocal(fn func(s *SessionState)) {
 		fn(value.(*SessionState))
 		return true
 	})
+}
+
+func (m *MemoryStore) ForEachGlobal(ctx context.Context, fn func(s *SessionState)) error {
+	m.ForEachLocal(fn)
+	return nil
 }
 
 func (m *MemoryStore) PublishCommand(ctx context.Context, targetNodeID, sessionID, action string, payload interface{}) error {

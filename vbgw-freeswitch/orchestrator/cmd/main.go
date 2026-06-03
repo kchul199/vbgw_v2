@@ -105,6 +105,7 @@ func main() {
 	// Initialize session manager (Redis primary, Memory fallback)
 	// C-3 FIX: Redis 연결 실패 시 MemoryStore로 자동 폴백하여 게이트웨이 가용성 유지
 	var sessionMgr session.Store
+	var cdrStore *cdr.CDRStore
 	overflowOpts := make([]overflow.Option, 0, 1)
 	var clusterMgr *cluster.Manager
 	redisMgr, err := session.NewRedisStore(cfg.RedisAddr, cfg.RedisPass, cfg.RedisDB, cfg.MaxSessions, nodeID)
@@ -119,6 +120,16 @@ func main() {
 		sessionMgr = session.NewMemoryStore(cfg.MaxSessions)
 	} else {
 		sessionMgr = redisMgr
+		if result, reconcileErr := reconcileActiveCallCounter(ctx, sessionMgr, nil); reconcileErr != nil {
+			slog.Error("Initial active call counter reconciliation failed", "err", reconcileErr)
+			if cfg.RuntimeProfile == "production" {
+				os.Exit(1)
+			}
+		} else if result.Corrected {
+			slog.Warn("Initial active call counter reconciled", "previous", result.Previous, "actual", result.Actual)
+		}
+		cdrStore = cdr.NewCDRStore(redisMgr.Client())
+		cdr.SetCDRStore(cdrStore)
 		overflowOpts = append(overflowOpts, overflow.WithRedisClient(
 			redisMgr.Client(),
 			nodeID,
@@ -166,6 +177,7 @@ func main() {
 			_ = clusterMgr.SetState(ctx, cluster.NodeStatePaused, "compatibility gate failed")
 		}
 		go runLeaseRenewalLoop(ctx, 3*time.Second, capacityMgr)
+		go runActiveCallReconciler(ctx, 30*time.Second, sessionMgr, clusterMgr)
 	}
 
 	// Connect ESL (eslClient used in handler closure, declared first)
@@ -303,7 +315,7 @@ func main() {
 	}()
 
 	// HTTP server
-	router, err := api.NewRouter(cfg, routeRuntime, capacityMgr, overflowMgr, gatewayStore, gatewaySelector, handoffMgr, clusterMgr, eslClient, sessionMgr, nodeID)
+	router, err := api.NewRouter(cfg, routeRuntime, capacityMgr, overflowMgr, gatewayStore, gatewaySelector, handoffMgr, clusterMgr, eslClient, sessionMgr, nodeID, cdrStore)
 	if err != nil {
 		slog.Error("Failed to build HTTP router", "err", err, "routing_config_path", cfg.RoutingConfigPath)
 		os.Exit(1)
@@ -370,6 +382,84 @@ func main() {
 	slog.Info("Orchestrator shutdown complete")
 }
 
+func runActiveCallReconciler(ctx context.Context, interval time.Duration, sessions session.Store, clusterMgr *cluster.Manager) {
+	if sessions == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			result, err := reconcileActiveCallCounter(ctx, sessions, clusterMgr)
+			if err != nil {
+				slog.Error("Active call counter reconciliation failed", "err", err)
+				continue
+			}
+			if result.Corrected {
+				slog.Warn("Active call counter reconciled", "previous", result.Previous, "actual", result.Actual)
+			}
+		}
+	}
+}
+
+func reconcileActiveCallCounter(ctx context.Context, sessions session.Store, clusterMgr *cluster.Manager) (session.ReconcileResult, error) {
+	actual, err := expectedActiveCalls(ctx, sessions, clusterMgr)
+	if err != nil {
+		return session.ReconcileResult{}, err
+	}
+	return sessions.ReconcileActiveCalls(ctx, actual)
+}
+
+func expectedActiveCalls(ctx context.Context, sessions session.Store, clusterMgr *cluster.Manager) (int64, error) {
+	if clusterMgr != nil {
+		nodes, err := clusterMgr.ListNodes(ctx)
+		if err != nil {
+			return 0, err
+		}
+		local := localActiveSessions(sessions)
+		now := time.Now()
+		var total int64
+		var fresh int
+		for _, node := range nodes {
+			if node.HeartbeatAt.IsZero() {
+				continue
+			}
+			ttl := time.Duration(node.HeartbeatTTLMS) * time.Millisecond
+			if ttl <= 0 {
+				ttl = 8 * time.Second
+			}
+			if now.Sub(node.HeartbeatAt) > ttl {
+				continue
+			}
+			total += node.LocalActiveSessions
+			fresh++
+		}
+		if fresh > 0 {
+			if local > total {
+				return local, nil
+			}
+			return total, nil
+		}
+	}
+	return localActiveSessions(sessions), nil
+}
+
+func localActiveSessions(sessions session.Store) int64 {
+	var local int64
+	if sessions != nil {
+		sessions.ForEachLocal(func(s *session.SessionState) {
+			local++
+		})
+	}
+	return local
+}
+
 // handleESLEvent dispatches incoming ESL events to the appropriate handler.
 func handleESLEvent(evt *esl.Event, sessionMgr session.Store, capacityMgr *capacity.Manager, overflowMgr *overflow.Manager, gatewaySelector *interconnect.Selector, handoffMgr *interconnect.HandoffManager, cfg *config.Config, eslClient esl.Commander, nodeID string) {
 	ctx := context.Background()
@@ -404,6 +494,10 @@ func handleESLEvent(evt *esl.Event, sessionMgr session.Store, capacityMgr *capac
 		case "sofia::unregister":
 			slog.Info("SIP unregistered")
 			metrics.SipRegistered.Set(0)
+		case "mod_audio_fork::play_audio":
+			onAudioForkPlayAudio(evt, eslClient)
+		case "mod_audio_fork::kill_audio":
+			onAudioForkKillAudio(evt, eslClient)
 		}
 	}
 }

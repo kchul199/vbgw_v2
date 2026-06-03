@@ -1,0 +1,26 @@
+services:
+  freeswitch:
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "1"
+          memory: 1G
+
+  vbgw-ai:
+    environment:
+      - AI_LOAD_TEST_GREETING_BYPASS=false
+      - AI_LOAD_TEST_GREETING_TONE_MS=1800
+      - AI_LOAD_TEST_GREETING_TONE_HZ=660
+      - AI_LOAD_TEST_GREETING_TONE_AMP=20000
+
+  bridge:
+    environment:
+      - LOG_LEVEL=info
+      - GREETING_FALLBACK_DELAY_MS=10000
+
+  orchestrator:
+    environment:
+      - ESL_HOST=vbgw-freeswitch

@@ -48,11 +48,29 @@ func ClassifyGatewayHealth(registerMode bool, resp string) string {
 		return HealthUnhealthy
 	}
 
-	if strings.Contains(upper, "\tDOWN") || strings.Contains(upper, " DOWN") || strings.Contains(upper, "FAILED") {
+	if gatewayStatusLineHas(upper, "DOWN") || gatewayStatusLineHas(upper, "FAILED") {
 		return HealthUnhealthy
 	}
 	if strings.Contains(upper, "NOREG") || strings.Contains(upper, "REGED") || strings.Contains(upper, "UP") {
 		return HealthHealthy
 	}
 	return HealthUnknown
+}
+
+func gatewayStatusLineHas(status, needle string) bool {
+	for _, line := range strings.Split(status, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch fields[0] {
+		case "STATE", "STATUS", "PINGSTATE":
+			for _, field := range fields[1:] {
+				if field == needle {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

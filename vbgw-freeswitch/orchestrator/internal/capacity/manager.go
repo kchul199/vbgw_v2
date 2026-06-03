@@ -110,6 +110,9 @@ type Manager struct {
 	registry *slots.Registry
 	leases   *cluster.LeaseStore
 	node     nodeStateProvider
+
+	leaseRenewDegraded bool
+	leaseRenewReason   string
 }
 
 type nodeStateProvider interface {
@@ -443,6 +446,15 @@ func (m *Manager) previewLocked(serviceName string) Decision {
 		decision.Reason = "node draining"
 		return decision
 	}
+	if m.leaseRenewDegraded {
+		decision := m.allowedDecision(state)
+		decision.Allowed = false
+		decision.Reason = m.leaseRenewReason
+		if decision.Reason == "" {
+			decision.Reason = "distributed lease renew degraded"
+		}
+		return decision
+	}
 
 	available := 0
 	now := time.Now()
@@ -767,14 +779,27 @@ func (m *Manager) RenewLeases() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
+	activeSlots := 0
+	failures := 0
 	for _, state := range m.services {
 		for _, slot := range state.slots {
 			if slot.sessionID == "" {
 				continue
 			}
-			_, _ = m.leases.Renew(context.Background(), state.name, slot.id, slot.sessionID, m.currentNodeStateLocked(), now)
+			activeSlots++
+			ok, err := m.leases.Renew(context.Background(), state.name, slot.id, slot.sessionID, m.currentNodeStateLocked(), now)
+			if err != nil || !ok {
+				failures++
+			}
 		}
 	}
+	if activeSlots == 0 || failures == 0 {
+		m.leaseRenewDegraded = false
+		m.leaseRenewReason = ""
+		return
+	}
+	m.leaseRenewDegraded = true
+	m.leaseRenewReason = "distributed lease renew degraded"
 }
 
 func (m *Manager) distributedLeaseMapLocked(serviceName string) map[string]cluster.LeaseRecord {

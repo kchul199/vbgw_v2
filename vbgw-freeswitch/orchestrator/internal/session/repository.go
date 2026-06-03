@@ -37,10 +37,18 @@ type Store interface {
 	SaveSession(ctx context.Context, s *SessionState) error
 	Release(ctx context.Context, sessionID string)
 	Count(ctx context.Context) int64
+	HealthCheck(ctx context.Context) error
+	ReconcileActiveCalls(ctx context.Context, actual int64) (ReconcileResult, error)
 	WaitAllDrained(ctx context.Context, killFn func(fsUUID string))
 	ForEachLocal(fn func(s *SessionState))
 	PublishCommand(ctx context.Context, targetNodeID, sessionID, action string, payload interface{}) error
 	SubscribeCommands(ctx context.Context, handler func(msg CommandMsg))
+}
+
+type ReconcileResult struct {
+	Previous  int64
+	Actual    int64
+	Corrected bool
 }
 
 // luaTryAcquire is an atomic Lua script for capacity check + increment.
@@ -49,11 +57,22 @@ type Store interface {
 var luaTryAcquire = redis.NewScript(`
 local current = redis.call('GET', KEYS[1])
 if current == false then current = 0 else current = tonumber(current) end
+if current < 0 then current = 0; redis.call('SET', KEYS[1], 0) end
 if current < tonumber(ARGV[1]) then
     redis.call('INCR', KEYS[1])
     return 1
 end
 return 0
+`)
+
+var luaReleaseActiveCall = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if current == false then current = 0 else current = tonumber(current) end
+if current <= 0 then
+    redis.call('SET', KEYS[1], 0)
+    return 0
+end
+return redis.call('DECR', KEYS[1])
 `)
 
 // RedisStore implements the Store interface using Redis.
@@ -137,7 +156,9 @@ func (rs *RedisStore) AddIfUnderCapacity(ctx context.Context, s *SessionState) b
 
 	if err := rs.saveToRedis(ctx, s); err != nil {
 		slog.Error("Redis save failed", "err", err)
-		rs.client.Decr(ctx, "vbgw:active_calls")
+		if _, releaseErr := luaReleaseActiveCall.Run(ctx, rs.client, []string{"vbgw:active_calls"}).Int64(); releaseErr != nil {
+			slog.Error("Redis active call rollback failed", "err", releaseErr)
+		}
 		return false
 	}
 
@@ -221,9 +242,11 @@ func (rs *RedisStore) Release(ctx context.Context, sessionID string) {
 		if s.FSUUID != "" {
 			pipe.Del(ctx, "vbgw:fsuuid:"+s.FSUUID)
 		}
-		pipe.Decr(ctx, "vbgw:active_calls")
 		if _, err := pipe.Exec(ctx); err != nil {
 			slog.Error("Redis release pipeline failed", "session_id", sessionID, "err", err)
+		}
+		if _, err := luaReleaseActiveCall.Run(ctx, rs.client, []string{"vbgw:active_calls"}).Int64(); err != nil {
+			slog.Error("Redis active call decrement failed", "session_id", sessionID, "err", err)
 		}
 	}
 }
@@ -234,6 +257,42 @@ func (rs *RedisStore) Count(ctx context.Context) int64 {
 		return 0
 	}
 	return val
+}
+
+func (rs *RedisStore) HealthCheck(ctx context.Context) error {
+	if rs == nil || rs.client == nil {
+		return nil
+	}
+	return rs.client.Ping(ctx).Err()
+}
+
+func (rs *RedisStore) ReconcileActiveCalls(ctx context.Context, actual int64) (ReconcileResult, error) {
+	var result ReconcileResult
+	if rs == nil || rs.client == nil {
+		return result, nil
+	}
+	if actual < 0 {
+		actual = 0
+	}
+	previous, err := rs.client.Get(ctx, "vbgw:active_calls").Int64()
+	if err == redis.Nil {
+		previous = 0
+	} else if err != nil {
+		return result, err
+	}
+
+	result = ReconcileResult{
+		Previous:  previous,
+		Actual:    actual,
+		Corrected: previous != actual,
+	}
+	if result.Corrected {
+		if err := rs.client.Set(ctx, "vbgw:active_calls", actual, 0).Err(); err != nil {
+			return result, err
+		}
+		slog.Warn("Reconciled Redis active call counter", "previous", previous, "actual", actual)
+	}
+	return result, nil
 }
 
 func (rs *RedisStore) WaitAllDrained(ctx context.Context, killFn func(fsUUID string)) {
@@ -286,6 +345,30 @@ func (rs *RedisStore) ForEachLocal(fn func(s *SessionState)) {
 	for _, s := range snapshot {
 		fn(s)
 	}
+}
+
+func (rs *RedisStore) ForEachGlobal(ctx context.Context, fn func(s *SessionState)) error {
+	iter := rs.client.Scan(ctx, 0, "vbgw:session:*", 200).Iterator()
+	for iter.Next(ctx) {
+		data, err := rs.client.Get(ctx, iter.Val()).Bytes()
+		if err == redis.Nil {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		var state SessionState
+		if err := json.Unmarshal(data, &state); err != nil {
+			slog.Warn("Redis session decode failed during global iteration", "key", iter.Val(), "err", err)
+			continue
+		}
+		state.aiPaused = state.AiPausedExport
+		state.recordPath = state.RecordPathExport
+		state.bridgedWith = state.BridgedWithExport
+		fn(&state)
+	}
+	return iter.Err()
 }
 
 // SaveSession persists a session state update to Redis.

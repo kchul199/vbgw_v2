@@ -12,6 +12,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -54,10 +55,14 @@ func (h *HealthHandler) Live(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "OK")
 }
 
-// Ready returns 200 if ESL is connected.
+// Ready returns 200 if ESL and the backing session store are available.
 func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 	if !h.ESL.IsConnected() {
 		http.Error(w, `{"status":"not_ready","reason":"ESL disconnected"}`, http.StatusServiceUnavailable)
+		return
+	}
+	if err := h.checkSessionStore(r.Context()); err != nil {
+		http.Error(w, `{"status":"not_ready","reason":"session store unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -69,6 +74,7 @@ type healthResponse struct {
 	Uptime      string `json:"uptime"`
 	ActiveCalls int64  `json:"active_calls"`
 	ESL         string `json:"esl"`
+	Redis       string `json:"redis"`
 	Bridge      string `json:"bridge"`
 }
 
@@ -88,6 +94,13 @@ func (h *HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
 		resp.ESL = "disconnected"
 		resp.Status = "degraded"
 		metrics.ESLConnected.Set(0)
+	}
+
+	if err := h.checkSessionStore(r.Context()); err != nil {
+		resp.Redis = "unreachable"
+		resp.Status = "degraded"
+	} else {
+		resp.Redis = "healthy"
 	}
 
 	// Check Bridge
@@ -118,4 +131,13 @@ func (h *HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (h *HealthHandler) checkSessionStore(ctx context.Context) error {
+	if h == nil || h.Sessions == nil {
+		return nil
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	return h.Sessions.HealthCheck(checkCtx)
 }
